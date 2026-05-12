@@ -10,6 +10,7 @@ The browser terminal controls a separate local Codex CLI process spawned in a se
 
 - Before implementing any request or task, analyze the request, produce a short plan, and ask the user to confirm. Do not start coding or editing files until the user confirms the plan.
 - For UI-related work, include a text mockup before implementation. The mockup should show the intended layout, key labels, states, and interactions in plain text.
+- For UI-related work, read `DESIGN.md` before planning or implementing. Treat it as the source of truth for layout, copy, visual system, responsive behavior, and component patterns.
 - Use Bun only.
 - Use `bun install`, `bun run <script>`, and `bun test`.
 - Do not use npm, yarn, or pnpm.
@@ -86,6 +87,7 @@ Default dev ports:
 
 ## UI Product Notes
 
+- Follow `DESIGN.md` for UI consistency before proposing mockups or code changes.
 - For every UI change, start with a text mockup and get confirmation before writing code.
 - The terminal is a live Codex CLI console, not a general-purpose shell.
 - The Task composer is the preferred managed workflow surface.
