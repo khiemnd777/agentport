@@ -66,9 +66,24 @@ interface CodexRuntimePermissions {
   sandbox: CodexSandboxMode;
 }
 
+interface SendMessageOptions {
+  planMode?: boolean;
+}
+
 const AGENT_PORT_DEVELOPER_INSTRUCTIONS = `You are running inside Agent Port, a browser-based remote control layer for local Codex.
 
 Follow the repository AGENTS.md and local project instructions. Treat this as a remote-managed session. Before risky or ambiguous changes, ask a concise question. When changing code, run relevant validation before completion and summarize changed files plus validation results.`;
+
+const MANAGED_PLAN_MODE_PREFIX = `Agent Port managed plan-first mode is enabled for this turn.
+
+Rules for this turn:
+1. Analyze the request and produce a concise implementation plan before editing files.
+2. Do not edit files, run write commands, or perform destructive actions until the user confirms the plan.
+3. Ask for confirmation using the available user-input request flow. The Agent Port browser will surface that request and route the user's confirmation back to this same Codex app-server turn.
+4. If the user requests changes to the plan, revise the plan and ask again before implementation.
+5. After confirmation, continue the task normally and run relevant validation before completion.
+
+User request:`;
 
 export class CodexChatService {
   private readonly activeTurns = new Map<string, ActiveTurn>();
@@ -109,7 +124,8 @@ export class CodexChatService {
     modelInput?: string,
     effortInput?: string,
     permissionModeInput?: string,
-    attachmentIds?: unknown
+    attachmentIds?: unknown,
+    options: SendMessageOptions = {}
   ): Promise<{ messages: ChatMessage[] }> {
     const prompt = promptInput.trim();
     const model = this.resolveModel(modelInput);
@@ -147,7 +163,16 @@ export class CodexChatService {
     await this.sessionService.setTaskState(session.id, "RUNNING", null);
     this.broadcastSessionStatus(session.id);
 
-    this.startCodexAppServerTurn(session, prompt, model, effort, permissions, assistantMessage.id, attachments);
+    this.startCodexAppServerTurn(
+      session,
+      prompt,
+      model,
+      effort,
+      permissions,
+      assistantMessage.id,
+      attachments,
+      options.planMode === true
+    );
 
     return { messages: [userMessage, assistantMessage] };
   }
@@ -231,7 +256,8 @@ export class CodexChatService {
     effort: CodexReasoningEffort,
     permissions: CodexRuntimePermissions,
     assistantMessageId: string,
-    attachments: AttachmentRecord[]
+    attachments: AttachmentRecord[],
+    planMode: boolean
   ): void {
     const client = new CodexAppServerClient(
       this.config.codex.command,
@@ -260,7 +286,7 @@ export class CodexChatService {
     };
     this.activeTurns.set(session.id, active);
 
-    void this.runCodexAppServerTurn(session, prompt, model, effort, permissions, attachments, active).catch((error) => {
+    void this.runCodexAppServerTurn(session, prompt, model, effort, permissions, attachments, active, planMode).catch((error) => {
       void this.failTurn(session.id, active, (error as Error).message);
     });
   }
@@ -272,7 +298,8 @@ export class CodexChatService {
     effort: CodexReasoningEffort,
     permissions: CodexRuntimePermissions,
     attachments: AttachmentRecord[],
-    active: ActiveTurn
+    active: ActiveTurn,
+    planMode: boolean
   ): Promise<void> {
     await active.client.initialize();
     let thread: { thread: { id: string } };
@@ -298,7 +325,7 @@ export class CodexChatService {
 
     const turn = await active.client.request<{ turn: { id: string } }>("turn/start", {
       threadId: thread.thread.id,
-      input: buildCodexInput(prompt, attachments),
+      input: buildCodexInput(prompt, attachments, { planMode }),
       cwd: session.repo_path,
       approvalPolicy: permissions.approvalPolicy,
       approvalsReviewer: permissions.approvalsReviewer,
@@ -745,9 +772,14 @@ export class CodexChatService {
 
 type CodexInputItem = Record<string, unknown>;
 
-function buildCodexInput(prompt: string, attachments: AttachmentRecord[]): CodexInputItem[] {
+function buildCodexInput(
+  prompt: string,
+  attachments: AttachmentRecord[],
+  options: { planMode?: boolean } = {}
+): CodexInputItem[] {
   const input: CodexInputItem[] = [];
-  const text = appendAttachmentManifest(prompt, attachments);
+  const promptText = options.planMode ? wrapPromptForManagedPlanMode(prompt) : prompt;
+  const text = appendAttachmentManifest(promptText, attachments);
   if (text) {
     input.push({ type: "text", text, text_elements: [] });
   }
@@ -764,6 +796,11 @@ function buildCodexInput(prompt: string, attachments: AttachmentRecord[]): Codex
     });
   }
   return input;
+}
+
+export function wrapPromptForManagedPlanMode(prompt: string): string {
+  return `${MANAGED_PLAN_MODE_PREFIX}
+${prompt}`;
 }
 
 function appendAttachmentManifest(prompt: string, attachments: AttachmentRecord[]): string {

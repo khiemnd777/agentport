@@ -30,11 +30,12 @@ export function sendChatMessage(
   model: string,
   reasoningEffort: CodexReasoningEffort | "",
   permissionMode: CodexPermissionMode | "",
-  attachmentIds: string[] = []
+  attachmentIds: string[] = [],
+  planMode = false
 ): Promise<{ messages: ChatMessage[] }> {
   return apiFetch(`/api/sessions/${sessionId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ prompt, model, reasoningEffort, permissionMode, attachmentIds })
+    body: JSON.stringify({ prompt, model, reasoningEffort, permissionMode, attachmentIds, planMode })
   });
 }
 

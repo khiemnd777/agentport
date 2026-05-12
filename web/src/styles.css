@@ -814,6 +814,37 @@ textarea:disabled {
   font-weight: 750;
 }
 
+.terminal-toolbar-left {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.terminal-command-button {
+  min-height: 26px;
+  border: 1px solid var(--color-terminal-border);
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--color-terminal-connection-bg);
+  color: var(--color-terminal-text);
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.terminal-command-button:not(:disabled):hover {
+  border-color: var(--color-primary-border);
+  color: var(--color-primary-strong);
+}
+
+.terminal-command-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .connection-dot.connected {
   background: var(--color-connected-bg);
   color: var(--color-connected-text);
@@ -851,6 +882,10 @@ textarea:disabled {
   background: var(--color-workspace-bg);
 }
 
+.chat-workspace:has(.chat-file-preview) {
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
 .chat-header {
   min-width: 0;
   display: flex;
@@ -860,6 +895,88 @@ textarea:disabled {
   padding: 12px 18px;
   border-bottom: 1px solid var(--color-border);
   background: var(--color-bg-surface);
+}
+
+.chat-file-preview {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, auto);
+  max-height: min(420px, 45vh);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-surface);
+}
+
+.chat-file-preview-header {
+  min-width: 0;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--color-border-soft);
+}
+
+.chat-file-preview-title {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-file-preview-title svg {
+  flex: 0 0 auto;
+  color: var(--color-muted);
+}
+
+.chat-file-preview-title > span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.chat-file-preview-title strong,
+.chat-file-preview-title small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-file-preview-title strong {
+  color: var(--color-text);
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.chat-file-preview-title small {
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.chat-file-preview-state {
+  min-height: 72px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 18px;
+  color: var(--color-muted-strong);
+  font-size: 13px;
+}
+
+.chat-file-preview-state.error {
+  color: var(--color-danger);
+}
+
+.chat-file-preview-code {
+  min-height: 0;
+  margin: 0;
+  overflow: auto;
+  padding: 14px 18px 18px;
+  background: var(--color-bg-panel);
+  color: var(--color-text);
+  font: 12px/1.5 Menlo, Monaco, "SFMono-Regular", Consolas, monospace;
+  white-space: pre;
 }
 
 .chat-title-block {
@@ -1222,6 +1339,20 @@ textarea:disabled {
   text-underline-offset: 3px;
 }
 
+.markdown-file-link {
+  display: inline;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--color-primary-strong);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  text-decoration-line: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
 .markdown-content code {
   border: 1px solid var(--color-border-soft);
   border-radius: 10px;
@@ -1438,7 +1569,7 @@ textarea:disabled {
   color: var(--color-text);
   padding: 10px 11px;
   outline: none;
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.4;
 }
 
@@ -1680,7 +1811,7 @@ textarea:disabled {
   color: var(--color-text);
   padding: 0;
   outline: none;
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.4;
 }
 
@@ -1707,6 +1838,7 @@ textarea:disabled {
 .composer-toolbar-right,
 .composer-mode-pill,
 .composer-permission-trigger,
+.composer-plan-trigger,
 .composer-picker-shell,
 .composer-model-trigger,
 .composer-busy-indicator {
@@ -1756,6 +1888,7 @@ textarea:disabled {
 
 .composer-mode-pill,
 .composer-permission-trigger,
+.composer-plan-trigger,
 .composer-model-trigger,
 .composer-busy-indicator {
   min-width: 0;
@@ -1789,6 +1922,38 @@ textarea:disabled {
   color: var(--color-danger);
 }
 
+.composer-plan-trigger {
+  min-height: 30px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-muted);
+  padding: 0 8px;
+  cursor: pointer;
+}
+
+.composer-plan-trigger:not(:disabled):hover,
+.composer-plan-trigger.active {
+  background: var(--color-primary-soft);
+  color: var(--color-primary-strong);
+}
+
+.composer-plan-trigger svg {
+  flex: 0 0 auto;
+}
+
+.composer-plan-note {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--color-primary-border);
+  border-radius: 8px;
+  background: var(--color-primary-softer);
+  color: var(--color-primary-strong);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
 .composer-permission-trigger svg {
   flex: 0 0 auto;
 }
@@ -1819,11 +1984,21 @@ textarea:disabled {
 }
 
 .composer-model-version {
+  min-width: 0;
   color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .composer-model-effort {
+  min-width: 0;
   color: var(--color-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.composer-model-effort-short {
+  display: none;
 }
 
 .composer-model-trigger svg {
@@ -2573,7 +2748,7 @@ textarea:disabled {
 
   .chat-composer textarea {
     min-height: 38px;
-    font-size: 14px;
+    font-size: 16px;
   }
 
   .composer-toolbar {
@@ -2589,6 +2764,7 @@ textarea:disabled {
 
   .composer-mode-pill,
   .composer-permission-trigger,
+  .composer-plan-trigger,
   .composer-model-trigger,
   .composer-busy-indicator {
     font-size: 12px;
@@ -2597,6 +2773,7 @@ textarea:disabled {
 
   .composer-mode-pill,
   .composer-permission-trigger,
+  .composer-plan-trigger,
   .composer-model-trigger {
     min-height: 30px;
     height: 30px;
@@ -2604,18 +2781,43 @@ textarea:disabled {
   }
 
   .composer-model-trigger {
-    max-width: 142px;
+    max-width: 112px;
     gap: 5px;
   }
 
   .composer-permission-trigger {
-    max-width: 150px;
+    flex: 0 0 auto;
+    width: 52px;
+    max-width: 52px;
+    justify-content: center;
+    gap: 3px;
+    padding: 0 5px;
+  }
+
+  .composer-permission-label {
+    display: none;
+  }
+
+  .composer-plan-trigger {
+    flex: 0 0 auto;
     gap: 5px;
+  }
+
+  .composer-plan-note {
+    font-size: 11px;
   }
 
   .composer-model-effort {
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .composer-model-effort-full {
+    display: none;
+  }
+
+  .composer-model-effort-short {
+    display: inline;
   }
 
   .composer-picker-popover {

@@ -2,6 +2,12 @@ import { Fragment, type ReactNode } from "react";
 
 interface Props {
   content: string;
+  onFileLinkClick?: (link: MarkdownFileLink) => void;
+}
+
+export interface MarkdownFileLink {
+  label: string;
+  target: string;
 }
 
 type Block =
@@ -27,7 +33,7 @@ interface DiffSummaryRow {
   deletions: number;
 }
 
-export default function MarkdownContent({ content }: Props) {
+export default function MarkdownContent({ content, onFileLinkClick }: Props) {
   const blocks = parseMarkdown(content);
   if (blocks.length === 0) {
     return null;
@@ -35,17 +41,17 @@ export default function MarkdownContent({ content }: Props) {
   return (
     <div className="markdown-content">
       {blocks.map((block, index) => (
-        <Fragment key={index}>{renderBlock(block)}</Fragment>
+        <Fragment key={index}>{renderBlock(block, onFileLinkClick)}</Fragment>
       ))}
     </div>
   );
 }
 
-function renderBlock(block: Block): ReactNode {
+function renderBlock(block: Block, onFileLinkClick?: (link: MarkdownFileLink) => void): ReactNode {
   if (block.type === "code") {
     const diffSummary = parseDiffSummary(block.text);
     if (diffSummary) {
-      return <ChatDiffSummaryBlock summary={diffSummary} />;
+      return <ChatDiffSummaryBlock summary={diffSummary} onFileLinkClick={onFileLinkClick} />;
     }
     return (
       <pre className="markdown-code">
@@ -56,17 +62,17 @@ function renderBlock(block: Block): ReactNode {
   }
   if (block.type === "heading") {
     const Tag = headingTag(block.level);
-    return <Tag>{renderInline(block.text)}</Tag>;
+    return <Tag>{renderInline(block.text, onFileLinkClick)}</Tag>;
   }
   if (block.type === "blockquote") {
-    return <blockquote>{renderInline(block.text)}</blockquote>;
+    return <blockquote>{renderInline(block.text, onFileLinkClick)}</blockquote>;
   }
   if (block.type === "list") {
     const Tag = block.ordered ? "ol" : "ul";
     return (
       <Tag>
         {block.items.map((item, index) => (
-          <li key={index}>{renderInline(item)}</li>
+          <li key={index}>{renderInline(item, onFileLinkClick)}</li>
         ))}
       </Tag>
     );
@@ -77,21 +83,27 @@ function renderBlock(block: Block): ReactNode {
       <div className="markdown-table-wrap">
         <table>
           <thead>
-            <tr>{head.map((cell, index) => <th key={index}>{renderInline(cell)}</th>)}</tr>
+            <tr>{head.map((cell, index) => <th key={index}>{renderInline(cell, onFileLinkClick)}</th>)}</tr>
           </thead>
           <tbody>
             {body.map((row, rowIndex) => (
-              <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{renderInline(cell)}</td>)}</tr>
+              <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{renderInline(cell, onFileLinkClick)}</td>)}</tr>
             ))}
           </tbody>
         </table>
       </div>
     );
   }
-  return <p>{renderInline(block.text)}</p>;
+  return <p>{renderInline(block.text, onFileLinkClick)}</p>;
 }
 
-function ChatDiffSummaryBlock({ summary }: { summary: DiffSummary }) {
+function ChatDiffSummaryBlock({
+  summary,
+  onFileLinkClick
+}: {
+  summary: DiffSummary;
+  onFileLinkClick?: (link: MarkdownFileLink) => void;
+}) {
   return (
     <div className="markdown-diff-summary">
       <div className="changed-file-row summary markdown-diff-summary-header">
@@ -105,14 +117,19 @@ function ChatDiffSummaryBlock({ summary }: { summary: DiffSummary }) {
       </div>
       <div className="markdown-diff-summary-list">
         {summary.rows.map((row) => (
-          <div className="changed-file-row markdown-diff-summary-row" key={row.path}>
+          <button
+            className="changed-file-row markdown-diff-summary-row"
+            type="button"
+            key={row.path}
+            onClick={() => onFileLinkClick?.({ label: row.path, target: row.path })}
+          >
             <span className="file-status modified">M</span>
             <span className="changed-file-main">
               <span className="changed-file-name">{row.name}</span>
               <span className="changed-file-dir">{row.dir || "./"}</span>
             </span>
             <ChangeStats additions={row.additions} deletions={row.deletions} />
-          </div>
+          </button>
         ))}
       </div>
     </div>
@@ -327,16 +344,16 @@ function parseTableRow(line: string): string[] {
   return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
 }
 
-function renderInline(text: string): ReactNode[] {
+function renderInline(text: string, onFileLinkClick?: (link: MarkdownFileLink) => void): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\(https?:\/\/[^)\s]+\))/g;
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\((?!#)[^)\s]+\))/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text))) {
     if (match.index > lastIndex) {
       nodes.push(...renderTextWithBreaks(text.slice(lastIndex, match.index), nodes.length));
     }
-    nodes.push(renderInlineToken(match[0], nodes.length));
+    nodes.push(renderInlineToken(match[0], nodes.length, onFileLinkClick));
     lastIndex = match.index + match[0].length;
   }
   if (lastIndex < text.length) {
@@ -358,7 +375,7 @@ function headingTag(level: number): "h1" | "h2" | "h3" | "h4" {
   return "h4";
 }
 
-function renderInlineToken(token: string, key: number): ReactNode {
+function renderInlineToken(token: string, key: number, onFileLinkClick?: (link: MarkdownFileLink) => void): ReactNode {
   if (token.startsWith("`")) {
     return <code key={key}>{token.slice(1, -1)}</code>;
   }
@@ -368,10 +385,24 @@ function renderInlineToken(token: string, key: number): ReactNode {
   if (token.startsWith("*")) {
     return <em key={key}>{token.slice(1, -1)}</em>;
   }
-  const link = token.match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/);
+  const link = token.match(/^\[([^\]]+)\]\(((?!#)[^)\s]+)\)$/);
   if (link) {
+    const target = link[2];
+    if (!/^https?:\/\//.test(target)) {
+      return (
+        <button
+          key={key}
+          className="markdown-file-link"
+          type="button"
+          title={target}
+          onClick={() => onFileLinkClick?.({ label: link[1], target })}
+        >
+          {link[1]}
+        </button>
+      );
+    }
     return (
-      <a key={key} href={link[2]} target="_blank" rel="noreferrer">
+      <a key={key} href={target} target="_blank" rel="noreferrer">
         {link[1]}
       </a>
     );

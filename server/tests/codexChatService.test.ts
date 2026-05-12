@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { CodexChatService } from "../src/services/codexChatService";
+import { CodexChatService, wrapPromptForManagedPlanMode } from "../src/services/codexChatService";
 import type { AppConfig } from "../src/config";
 import type { CodexSession } from "../src/domain/sessionTypes";
 import { ChatMessageStore } from "../src/services/chatMessageStore";
@@ -81,6 +81,15 @@ const session: CodexSession = {
 };
 
 describe("codex chat service models", () => {
+  test("wraps managed plan mode prompts with confirmation instructions", () => {
+    const wrapped = wrapPromptForManagedPlanMode("Implement the feature");
+
+    expect(wrapped).toContain("Agent Port managed plan-first mode is enabled");
+    expect(wrapped).toContain("Do not edit files");
+    expect(wrapped).toContain("available user-input request flow");
+    expect(wrapped).toContain("Implement the feature");
+  });
+
   test("lists configured public models", () => {
     const service = new CodexChatService(config, null as never, null as never, null as never);
     expect(service.listModels()).toEqual({

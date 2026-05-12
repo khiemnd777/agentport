@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ListChecks } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -36,6 +37,7 @@ export default function CodexTerminal({ sessionId, onStatus }: Props) {
   const socketRef = useRef<WebSocket | null>(null);
   const canSendInputRef = useRef(false);
   const [connectionState, setConnectionState] = useState<ConnectionState>("DISCONNECTED");
+  const [terminalWritable, setTerminalWritable] = useState(false);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -90,6 +92,7 @@ export default function CodexTerminal({ sessionId, onStatus }: Props) {
     if (!sessionId) {
       setConnectionState("DISCONNECTED");
       canSendInputRef.current = false;
+      setTerminalWritable(false);
       terminal.options.disableStdin = true;
       terminal.writeln("Create or select a session to connect.");
       return;
@@ -109,6 +112,7 @@ export default function CodexTerminal({ sessionId, onStatus }: Props) {
 
     const setWritable = (enabled: boolean) => {
       canSendInputRef.current = enabled;
+      setTerminalWritable(enabled);
       terminal.options.disableStdin = !enabled;
     };
 
@@ -238,6 +242,7 @@ export default function CodexTerminal({ sessionId, onStatus }: Props) {
 
     setConnectionState("CONNECTING");
     canSendInputRef.current = false;
+    setTerminalWritable(false);
     terminal.options.disableStdin = true;
     terminal.writeln("Connecting to Agent Port...");
 
@@ -259,10 +264,30 @@ export default function CodexTerminal({ sessionId, onStatus }: Props) {
     };
   }, [sessionId, onStatus]);
 
+  function sendPlanCommand() {
+    const socket = socketRef.current;
+    if (!sessionId || !canSendInputRef.current || socket?.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    socket.send(JSON.stringify({ type: "input", sessionId, data: "/plan\r" }));
+    terminalRef.current?.focus();
+  }
+
   return (
     <div className="terminal-shell">
       <div className="terminal-toolbar">
-        <span>Codex terminal</span>
+        <div className="terminal-toolbar-left">
+          <span>Codex terminal</span>
+          <button
+            className="terminal-command-button"
+            type="button"
+            disabled={!terminalWritable}
+            onClick={sendPlanCommand}
+            title="Send native /plan to this Codex CLI session"
+          >
+            <ListChecks size={15} /> Plan
+          </button>
+        </div>
         <span className={`connection-dot ${connectionState.toLowerCase()}`}>{connectionState}</span>
       </div>
       <div ref={containerRef} className="terminal-container" />

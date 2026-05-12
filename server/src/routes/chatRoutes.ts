@@ -23,10 +23,13 @@ export function chatRoutes(sessionService: SessionService, codexChatService: Cod
     const reasoningEffort = typeof body.reasoningEffort === "string" ? body.reasoningEffort : undefined;
     const permissionMode = typeof body.permissionMode === "string" ? body.permissionMode : undefined;
     const attachmentIds = body.attachmentIds;
+    const planMode = body.planMode === true;
     if (attachmentIds !== undefined && !Array.isArray(attachmentIds)) {
       throw badRequest("attachmentIds must be an array");
     }
-    const result = await codexChatService.sendMessage(session, prompt, model, reasoningEffort, permissionMode, attachmentIds);
+    const result = await codexChatService.sendMessage(session, prompt, model, reasoningEffort, permissionMode, attachmentIds, {
+      planMode
+    });
     return c.json(result, 201);
   });
 

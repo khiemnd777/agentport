@@ -38,6 +38,7 @@ interface Props {
 const CODEX_MODEL_STORAGE_KEY = "remote-codex-model";
 const CODEX_REASONING_EFFORT_STORAGE_KEY = "remote-codex-reasoning-effort";
 const CODEX_PERMISSION_MODE_STORAGE_KEY = "remote-codex-permission-mode";
+const CODEX_PLAN_MODE_STORAGE_KEY = "remote-codex-plan-mode";
 const ACTIVE_SESSION_STORAGE_KEY = "agent-port-active-session-id";
 
 export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout }: Props) {
@@ -55,6 +56,7 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
   const [selectedPermissionMode, setSelectedPermissionMode] = useState<CodexPermissionMode | "">(
     () => normalizeStoredPermissionMode(window.localStorage.getItem(CODEX_PERMISSION_MODE_STORAGE_KEY))
   );
+  const [planMode, setPlanMode] = useState(() => window.localStorage.getItem(CODEX_PLAN_MODE_STORAGE_KEY) === "true");
   const [selectedRepoKey, setSelectedRepoKey] = useState<string | null>(null);
   const [sessions, setSessions] = useState<CodexSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(
@@ -404,7 +406,15 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
       codexPermissionModes,
       defaultPermissionMode
     );
-    const result = await sendChatMessage(activeSession.id, prompt, model, reasoningEffort, permissionMode, attachmentIds);
+    const result = await sendChatMessage(
+      activeSession.id,
+      prompt,
+      model,
+      reasoningEffort,
+      permissionMode,
+      attachmentIds,
+      planMode
+    );
     setChatMessages((current) => upsertMessages(current, result.messages));
     await refreshSessions();
   }
@@ -436,6 +446,11 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
     window.localStorage.setItem(CODEX_PERMISSION_MODE_STORAGE_KEY, next);
   }
 
+  function handlePlanModeChange(enabled: boolean) {
+    setPlanMode(enabled);
+    window.localStorage.setItem(CODEX_PLAN_MODE_STORAGE_KEY, enabled ? "true" : "false");
+  }
+
   async function handleStopChatTurn() {
     if (!activeSession) {
       return;
@@ -463,6 +478,7 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
   const consolePanel = <CodexTerminal sessionId={activeSessionId} onStatus={handleTerminalStatus} />;
   const changesPanel = (
     <GitStatusPanel
+      sessionId={activeSessionId}
       status={gitStatus}
       diff={diff}
       selectedFile={selectedFile}
@@ -491,9 +507,11 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
         codexPermissionModes,
         defaultPermissionMode
       )}
+      planMode={planMode}
       onSelectedModelChange={handleSelectedModelChange}
       onSelectedReasoningEffortChange={handleSelectedReasoningEffortChange}
       onSelectedPermissionModeChange={handleSelectedPermissionModeChange}
+      onPlanModeChange={handlePlanModeChange}
       onSubmitMessage={handleSendChatMessage}
       onSubmitUserInput={handleSubmitChatUserInput}
       onStopTurn={handleStopChatTurn}

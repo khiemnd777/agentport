@@ -1,9 +1,13 @@
+import { useState } from "react";
 import { RefreshCw } from "lucide-react";
 import type { GitStatus } from "../../api/client";
+import { getSessionFileContent } from "../../api/filesApi";
+import FilePreviewPanel, { type FilePreviewState } from "../files/FilePreviewPanel";
 import ChangedFilesList from "./ChangedFilesList";
 import DiffViewer from "./DiffViewer";
 
 interface Props {
+  sessionId: string | null;
   status: GitStatus | null;
   diff: string;
   selectedFile: string | null;
@@ -13,6 +17,7 @@ interface Props {
 }
 
 export default function GitStatusPanel({
+  sessionId,
   status,
   diff,
   selectedFile,
@@ -20,6 +25,28 @@ export default function GitStatusPanel({
   onRefresh,
   onSelectFile
 }: Props) {
+  const [filePreview, setFilePreview] = useState<FilePreviewState | null>(null);
+
+  async function handleSelectFile(file: string | null) {
+    onSelectFile(file);
+    if (!file || !sessionId) {
+      setFilePreview(null);
+      return;
+    }
+    const label = basenameFromPath(file);
+    setFilePreview({ status: "loading", label });
+    try {
+      const result = await getSessionFileContent(sessionId, { file });
+      setFilePreview({ status: "ready", file: result.file });
+    } catch (error) {
+      setFilePreview({
+        status: "error",
+        label,
+        message: error instanceof Error ? error.message : "Cannot open file from this session."
+      });
+    }
+  }
+
   return (
     <section className="git-panel">
       <div className="panel-title-row">
@@ -31,9 +58,14 @@ export default function GitStatusPanel({
           <RefreshCw size={16} className={refreshing ? "spin" : ""} />
         </button>
       </div>
-      <ChangedFilesList files={status?.files ?? []} selectedFile={selectedFile} onSelect={onSelectFile} />
+      <ChangedFilesList files={status?.files ?? []} selectedFile={selectedFile} onSelect={handleSelectFile} />
       {status && !status.isRepository ? <div className="warning-banner">{status.error}</div> : null}
+      {filePreview ? <FilePreviewPanel preview={filePreview} onClose={() => setFilePreview(null)} /> : null}
       <DiffViewer diff={diff} />
     </section>
   );
+}
+
+function basenameFromPath(filePath: string): string {
+  return filePath.split(/[\\/]+/).filter(Boolean).pop() ?? filePath;
 }

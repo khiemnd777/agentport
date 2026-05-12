@@ -178,6 +178,13 @@ export interface GitStatus {
   error?: string;
 }
 
+export interface FilePreview {
+  path: string;
+  name: string;
+  size_bytes: number;
+  content: string;
+}
+
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   const usesFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;

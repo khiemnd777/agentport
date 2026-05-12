@@ -9,10 +9,13 @@ import {
   FileImage,
   FileVideo,
   GitBranch,
+  ListChecks,
   Loader2,
   MessageSquare,
   Paperclip,
   Plus,
+  Shield,
+  ShieldAlert,
   ShieldCheck,
   Square,
   TerminalSquare,
@@ -31,9 +34,11 @@ import type {
   WaitingUserInput
 } from "../../api/client";
 import { chatAttachmentContentUrl, uploadChatAttachment } from "../../api/chatApi";
+import { getSessionFileContent } from "../../api/filesApi";
+import FilePreviewPanel, { type FilePreviewState } from "../files/FilePreviewPanel";
 import SessionStatusBadge from "../sessions/SessionStatusBadge";
 import TaskStatusBadge from "../tasks/TaskStatusBadge";
-import MarkdownContent from "./MarkdownContent";
+import MarkdownContent, { type MarkdownFileLink } from "./MarkdownContent";
 
 interface Props {
   activeSession: CodexSession | null;
@@ -46,9 +51,11 @@ interface Props {
   selectedReasoningEffort: CodexReasoningEffort | "";
   permissionModes: PublicCodexPermissionMode[];
   selectedPermissionMode: CodexPermissionMode | "";
+  planMode: boolean;
   onSelectedModelChange: (model: string) => void;
   onSelectedReasoningEffortChange: (reasoningEffort: CodexReasoningEffort) => void;
   onSelectedPermissionModeChange: (permissionMode: CodexPermissionMode) => void;
+  onPlanModeChange: (enabled: boolean) => void;
   onSubmitMessage: (prompt: string, attachmentIds: string[]) => Promise<void>;
   onSubmitUserInput: (text: string) => Promise<void>;
   onStopTurn: () => Promise<void>;
@@ -77,9 +84,11 @@ export default function ChatWorkspace({
   selectedReasoningEffort,
   permissionModes,
   selectedPermissionMode,
+  planMode,
   onSelectedModelChange,
   onSelectedReasoningEffortChange,
   onSelectedPermissionModeChange,
+  onPlanModeChange,
   onSubmitMessage,
   onSubmitUserInput,
   onStopTurn,
@@ -92,6 +101,7 @@ export default function ChatWorkspace({
   const [collapsedActivity, setCollapsedActivity] = useState<Record<string, boolean>>({});
   const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([]);
   const [dragActive, setDragActive] = useState(false);
+  const [filePreview, setFilePreview] = useState<FilePreviewState | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement | null>(null);
   const threadEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -113,6 +123,7 @@ export default function ChatWorkspace({
   const hasAttachmentErrors = composerAttachments.some((item) => item.status === "error");
   const hasSendableContent = Boolean(draft.trim()) || uploadedAttachmentIds.length > 0;
   const attachmentControlsDisabled = composerDisabled || turnBusy;
+  const planModeDisabled = composerDisabled || turnBusy;
   const sendDisabled =
     composerDisabled || turnBusy || hasAttachmentUploadPending || hasAttachmentErrors || !hasSendableContent;
 
@@ -155,6 +166,7 @@ export default function ChatWorkspace({
     setComposerAttachments([]);
     setDragActive(false);
     dragDepthRef.current = 0;
+    setFilePreview(null);
   }, [activeSession?.id]);
 
   function addFiles(files: FileList | globalThis.File[]) {
@@ -308,6 +320,24 @@ export default function ChatWorkspace({
     }
   }
 
+  async function handleOpenFileLink(link: MarkdownFileLink) {
+    if (!activeSession) {
+      return;
+    }
+    const lookup = fileLookupFromMarkdownLink(link);
+    setFilePreview({ status: "loading", label: lookup.label });
+    try {
+      const result = await getSessionFileContent(activeSession.id, lookup.query);
+      setFilePreview({ status: "ready", file: result.file });
+    } catch (error) {
+      setFilePreview({
+        status: "error",
+        label: lookup.label,
+        message: error instanceof Error ? error.message : "Cannot open file from this chat."
+      });
+    }
+  }
+
   const placeholder = (() => {
     if (!activeSession) {
       return "Create a chat first.";
@@ -354,6 +384,8 @@ export default function ChatWorkspace({
         </div>
       </header>
 
+      {filePreview ? <FilePreviewPanel preview={filePreview} onClose={() => setFilePreview(null)} /> : null}
+
       <div className="chat-scroll" ref={scrollAreaRef}>
         <div className="chat-system-note">
           <MessageSquare size={17} />
@@ -379,6 +411,7 @@ export default function ChatWorkspace({
                     <AssistantActivityGroup
                       message={message}
                       collapsed={collapsedActivity[message.id] ?? message.status !== "streaming"}
+                      onFileLinkClick={handleOpenFileLink}
                       onToggle={() =>
                         setCollapsedActivity((current) => ({
                           ...current,
@@ -387,7 +420,7 @@ export default function ChatWorkspace({
                       }
                     />
                     {message.content ? (
-                      <MarkdownContent content={message.content} />
+                      <MarkdownContent content={message.content} onFileLinkClick={handleOpenFileLink} />
                     ) : message.activities.length === 0 && message.status === "streaming" ? (
                       <p className="thinking-placeholder">Thinking...</p>
                     ) : null}
@@ -415,6 +448,7 @@ export default function ChatWorkspace({
         <WaitingUserInputComposer
           waitingInput={activeSession?.waiting_user_input ?? null}
           cancelling={cancelling}
+          onFileLinkClick={handleOpenFileLink}
           onSubmit={onSubmitUserInput}
           onStop={() => void handleCancel()}
         />
@@ -467,6 +501,17 @@ export default function ChatWorkspace({
                   disabled={permissionModes.length === 0 || turnBusy}
                   onSelectedPermissionModeChange={onSelectedPermissionModeChange}
                 />
+                <button
+                  className={planMode ? "composer-plan-trigger active" : "composer-plan-trigger"}
+                  type="button"
+                  disabled={planModeDisabled}
+                  aria-pressed={planMode}
+                  title="Managed plan-first mode for app-server"
+                  onClick={() => onPlanModeChange(!planMode)}
+                >
+                  <ListChecks size={18} />
+                  <span>Plan</span>
+                </button>
               </div>
               <div className="composer-toolbar-right">
                 {turnBusy ? (
@@ -501,6 +546,11 @@ export default function ChatWorkspace({
                 )}
               </div>
             </div>
+            {planMode ? (
+              <div className="composer-plan-note">
+                Managed plan-first mode for app-server. Codex will propose a plan and wait for confirmation before edits.
+              </div>
+            ) : null}
           </div>
         </form>
       )}
@@ -511,11 +561,13 @@ export default function ChatWorkspace({
 function WaitingUserInputComposer({
   waitingInput,
   cancelling,
+  onFileLinkClick,
   onSubmit,
   onStop
 }: {
   waitingInput: WaitingUserInput | null;
   cancelling: boolean;
+  onFileLinkClick: (link: MarkdownFileLink) => void;
   onSubmit: (text: string) => Promise<void>;
   onStop: () => void;
 }) {
@@ -563,7 +615,7 @@ function WaitingUserInputComposer({
           </button>
         </div>
         <div className="waiting-input-question">
-          <MarkdownContent content={questionText} />
+          <MarkdownContent content={questionText} onFileLinkClick={onFileLinkClick} />
         </div>
         <div className="waiting-input-actions">
           <button
@@ -656,6 +708,7 @@ function PermissionModePicker({
   }, [disabled]);
 
   const label = selectedMode ? formatCompactPermissionLabel(selectedMode.label) : "Permissions";
+  const accessibleLabel = selectedMode ? `${selectedMode.label} permissions` : "Permissions";
 
   return (
     <div className="composer-picker-shell" ref={pickerRef}>
@@ -665,9 +718,11 @@ function PermissionModePicker({
         disabled={disabled}
         aria-expanded={open}
         aria-haspopup="menu"
+        aria-label={accessibleLabel}
+        title={accessibleLabel}
         onClick={() => setOpen((current) => !current)}
       >
-        {selectedMode?.highRisk ? <AlertCircle size={18} /> : <ShieldCheck size={18} />}
+        <PermissionModeIcon mode={selectedMode} size={18} />
         <span className="composer-permission-label">{label}</span>
         <ChevronDown size={17} />
       </button>
@@ -770,6 +825,7 @@ function ModelReasoningPicker({
 
   const modelLabel = selectedModelItem?.label ?? "Codex";
   const effortLabel = selectedEffortItem?.label ?? "Medium";
+  const shortEffortLabel = formatShortReasoningEffort(selectedEffortItem);
 
   return (
     <div className="composer-picker-shell" ref={pickerRef}>
@@ -779,13 +835,20 @@ function ModelReasoningPicker({
         disabled={disabled}
         aria-expanded={open}
         aria-haspopup="menu"
+        aria-label={`${formatCompactModelLabel(modelLabel)} ${effortLabel}`}
+        title={`${formatCompactModelLabel(modelLabel)} ${effortLabel}`}
         onClick={() => {
           setOpen((current) => !current);
           setModelPanelOpen(false);
         }}
       >
         <span className="composer-model-version">{formatCompactModelLabel(modelLabel)}</span>
-        <span className="composer-model-effort">{effortLabel}</span>
+        <span className="composer-model-effort">
+          <span className="composer-model-effort-full">{effortLabel}</span>
+          <span className="composer-model-effort-short" aria-hidden="true">
+            {shortEffortLabel}
+          </span>
+        </span>
         <ChevronDown size={17} />
       </button>
       {open ? (
@@ -857,13 +920,25 @@ function ModelReasoningPicker({
   );
 }
 
+function PermissionModeIcon({ mode, size }: { mode: PublicCodexPermissionMode | null; size: number }) {
+  if (mode?.id === "auto-review") {
+    return <ShieldCheck size={size} />;
+  }
+  if (mode?.id === "full-access") {
+    return <ShieldAlert size={size} />;
+  }
+  return <Shield size={size} />;
+}
+
 function AssistantActivityGroup({
   message,
   collapsed,
+  onFileLinkClick,
   onToggle
 }: {
   message: ChatMessage;
   collapsed: boolean;
+  onFileLinkClick: (link: MarkdownFileLink) => void;
   onToggle: () => void;
 }) {
   if (message.activities.length === 0) {
@@ -881,7 +956,11 @@ function AssistantActivityGroup({
           {message.activities.map((activity) => (
             <div className="assistant-activity-section" key={activity.id}>
               <div className="assistant-activity-title">{activity.title}</div>
-              {activity.content ? <MarkdownContent content={activity.content} /> : <p className="thinking-placeholder">Thinking...</p>}
+              {activity.content ? (
+                <MarkdownContent content={activity.content} onFileLinkClick={onFileLinkClick} />
+              ) : (
+                <p className="thinking-placeholder">Thinking...</p>
+              )}
             </div>
           ))}
         </div>
@@ -1074,10 +1153,56 @@ function formatCompactPermissionLabel(label: string): string {
   return label.replace(/\s+permissions$/i, "");
 }
 
+function formatShortReasoningEffort(effort: PublicCodexReasoningEffort | null): string {
+  if (effort?.id === "low") {
+    return "L";
+  }
+  if (effort?.id === "medium") {
+    return "M";
+  }
+  if (effort?.id === "high") {
+    return "H";
+  }
+  if (effort?.id === "xhigh") {
+    return "xH";
+  }
+  return effort?.label.slice(0, 1) ?? "M";
+}
+
 function preferredConfirmAnswer(waitingInput: WaitingUserInput | null): string {
   const options = waitingInput?.questions.flatMap((question) => question.options ?? []) ?? [];
   const match = options.find((option) => /confirm|approve|accept|proceed|continue|implement|yes|ok/i.test(option.label));
   return match?.label ?? "Confirm plan";
+}
+
+function fileLookupFromMarkdownLink(link: MarkdownFileLink): {
+  label: string;
+  query: { file?: string; name?: string };
+} {
+  const label = link.label.trim() || basenameFromLinkTarget(link.target) || "file";
+  const target = decodeLinkTarget(link.target);
+  if (target && !target.startsWith("/") && !/^https?:\/\//.test(target)) {
+    const relativePath = target.replace(/^\.\//, "");
+    return relativePath.includes("/") ? { label, query: { file: relativePath } } : { label, query: { name: relativePath } };
+  }
+  const labelPath = decodeLinkTarget(label).replace(/^\.\//, "");
+  if (labelPath.includes("/") && !labelPath.startsWith("/") && !/^https?:\/\//.test(labelPath)) {
+    return { label, query: { file: labelPath } };
+  }
+  const fileName = basenameFromLinkTarget(target) || basenameFromLinkTarget(label);
+  return { label, query: { name: fileName || label } };
+}
+
+function decodeLinkTarget(target: string): string {
+  try {
+    return decodeURIComponent(target);
+  } catch {
+    return target;
+  }
+}
+
+function basenameFromLinkTarget(target: string): string {
+  return target.split(/[\\/]+/).filter(Boolean).pop() ?? "";
 }
 
 function formatDuration(durationMs: number | null): string {
