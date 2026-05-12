@@ -26,7 +26,7 @@ import {
 import { getRepos } from "../api/reposApi";
 import { archiveSession, closeSession, createSession, deleteSession, listSessions } from "../api/sessionsApi";
 import { getGitDiff, getGitStatus } from "../api/gitApi";
-import { interruptChat, listChatMessages, listCodexModels, sendChatMessage } from "../api/chatApi";
+import { interruptChat, listChatMessages, listCodexModels, sendChatMessage, submitChatUserInput } from "../api/chatApi";
 import type { DisplayMode } from "../theme";
 
 interface Props {
@@ -409,6 +409,15 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
     await refreshSessions();
   }
 
+  async function handleSubmitChatUserInput(text: string) {
+    if (!activeSession) {
+      return;
+    }
+    const result = await submitChatUserInput(activeSession.id, text);
+    setChatMessages((current) => upsertMessages(current, result.messages));
+    await refreshSessions();
+  }
+
   function handleSelectedModelChange(model: string) {
     const next = normalizeSelectedModel(model, codexModels, defaultModel);
     setSelectedModel(next);
@@ -486,6 +495,7 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
       onSelectedReasoningEffortChange={handleSelectedReasoningEffortChange}
       onSelectedPermissionModeChange={handleSelectedPermissionModeChange}
       onSubmitMessage={handleSendChatMessage}
+      onSubmitUserInput={handleSubmitChatUserInput}
       onStopTurn={handleStopChatTurn}
       onCreateSession={() => void handleCreateSession()}
       onOpenConsole={() => {

@@ -40,12 +40,34 @@ export interface CodexSession {
   task_status: TaskStatus;
   active_task_id: string | null;
   codex_thread_id: string | null;
+  waiting_user_input: WaitingUserInput | null;
   created_at: string;
   updated_at: string;
   started_at: string | null;
   closed_at: string | null;
   last_output_at: string | null;
   archived_at: string | null;
+}
+
+export interface WaitingUserInputOption {
+  label: string;
+  description: string;
+}
+
+export interface WaitingUserInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  isOther: boolean;
+  isSecret: boolean;
+  options: WaitingUserInputOption[] | null;
+}
+
+export interface WaitingUserInput {
+  kind: "user_input";
+  message: string;
+  questions: WaitingUserInputQuestion[];
+  requested_at: string;
 }
 
 export type ChatMessageRole = "user" | "assistant" | "system";

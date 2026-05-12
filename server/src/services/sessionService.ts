@@ -1,6 +1,13 @@
 import path from "node:path";
 import type { AppConfig } from "../config";
-import type { CodexSession, ControlMode, PublicCodexSession, SessionSource, TerminalStatus } from "../domain/sessionTypes";
+import type {
+  CodexSession,
+  ControlMode,
+  PublicCodexSession,
+  SessionSource,
+  TerminalStatus,
+  WaitingUserInput
+} from "../domain/sessionTypes";
 import type { TaskStatus } from "../domain/taskTypes";
 import { deleteFileIfExists, listJsonFiles, writeJsonFile, ensureDir } from "../utils/fileStore";
 import { createId, nowIso } from "../utils/ids";
@@ -37,6 +44,10 @@ export class SessionService {
         session.codex_thread_id = null;
         needsSave = true;
       }
+      if ((session as Partial<CodexSession>).waiting_user_input === undefined) {
+        session.waiting_user_input = null;
+        needsSave = true;
+      }
       if (!["CLOSED", "ERROR"].includes(session.terminal_status)) {
         session.terminal_status = "DISCONNECTED";
         session.updated_at = nowIso();
@@ -45,6 +56,12 @@ export class SessionService {
       if (["CREATED", "RUNNING", "WAITING_FOR_USER"].includes(session.task_status)) {
         session.task_status = "CANCELLED";
         session.active_task_id = null;
+        session.waiting_user_input = null;
+        session.updated_at = nowIso();
+        needsSave = true;
+      }
+      if (session.task_status !== "WAITING_FOR_USER" && session.waiting_user_input) {
+        session.waiting_user_input = null;
         session.updated_at = nowIso();
         needsSave = true;
       }
@@ -108,6 +125,7 @@ export class SessionService {
       task_status: "IDLE",
       active_task_id: null,
       codex_thread_id: null,
+      waiting_user_input: null,
       created_at: now,
       updated_at: now,
       started_at: null,
@@ -193,6 +211,23 @@ export class SessionService {
     const session = this.get(id);
     session.task_status = taskStatus;
     session.active_task_id = activeTaskId;
+    if (taskStatus !== "WAITING_FOR_USER") {
+      session.waiting_user_input = null;
+    }
+    session.updated_at = nowIso();
+    await this.save(session);
+    return session;
+  }
+
+  async setWaitingUserInput(
+    id: string,
+    waitingUserInput: WaitingUserInput,
+    activeTaskId: string | null
+  ): Promise<CodexSession> {
+    const session = this.get(id);
+    session.task_status = "WAITING_FOR_USER";
+    session.active_task_id = activeTaskId;
+    session.waiting_user_input = waitingUserInput;
     session.updated_at = nowIso();
     await this.save(session);
     return session;

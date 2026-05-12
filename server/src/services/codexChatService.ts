@@ -9,7 +9,7 @@ import type {
 } from "../config";
 import type { PublicAttachmentMetadata } from "../domain/attachmentTypes";
 import type { ChatMessage } from "../domain/chatTypes";
-import type { CodexSession } from "../domain/sessionTypes";
+import type { CodexSession, WaitingUserInput, WaitingUserInputQuestion } from "../domain/sessionTypes";
 import { badRequest, conflict } from "../utils/httpErrors";
 import { createId, nowIso } from "../utils/ids";
 import {
@@ -29,11 +29,19 @@ interface ActiveTurn {
   threadId: string | null;
   turnId: string | null;
   finished: boolean;
+  pendingUserInput: PendingUserInputRequest | null;
   itemTargets: Map<string, ItemTarget>;
 }
 
 type JsonRecord = Record<string, unknown>;
 type ItemTarget = { target: "assistant" } | { target: "activity"; activityId: string };
+interface PendingUserInputRequest {
+  requestId: number;
+  client: CodexAppServerClient;
+  threadId: string | null;
+  turnId: string | null;
+  questions: WaitingUserInputQuestion[];
+}
 
 export interface PublicCodexModel {
   id: string;
@@ -144,6 +152,54 @@ export class CodexChatService {
     return { messages: [userMessage, assistantMessage] };
   }
 
+  async submitUserInput(session: CodexSession, textInput: string): Promise<{ messages: ChatMessage[] }> {
+    const text = textInput.trim();
+    if (!text) {
+      throw badRequest("Input text is required");
+    }
+    if (session.archived_at) {
+      throw conflict("Archived sessions are read-only");
+    }
+
+    const active = this.activeTurns.get(session.id);
+    if (!active || active.finished) {
+      throw conflict("No active Codex turn is waiting for input");
+    }
+    if (session.task_status !== "WAITING_FOR_USER" && !active.pendingUserInput) {
+      throw conflict("Codex is not waiting for user input");
+    }
+    if (!active.pendingUserInput && (!active.threadId || !active.turnId)) {
+      throw conflict("Codex turn is not ready for follow-up input");
+    }
+
+    const userMessage = await this.messageStore.create({
+      sessionId: session.id,
+      role: "user",
+      content: text,
+      status: "complete",
+      turnId: active.turnId
+    });
+    this.broadcaster.broadcast(session.id, { type: "message_created", sessionId: session.id, message: userMessage });
+
+    if (active.pendingUserInput) {
+      const pending = active.pendingUserInput;
+      active.pendingUserInput = null;
+      pending.client.respond(pending.requestId, {
+        answers: buildUserInputResponseAnswers(pending.questions, text)
+      });
+    } else if (active.threadId && active.turnId) {
+      await active.client.request("turn/steer", {
+        threadId: active.threadId,
+        expectedTurnId: active.turnId,
+        input: buildCodexInput(text, [])
+      });
+    }
+
+    await this.sessionService.setTaskState(session.id, "RUNNING", null);
+    this.broadcastSessionStatus(session.id);
+    return { messages: [userMessage] };
+  }
+
   async interrupt(sessionId: string): Promise<void> {
     const active = this.activeTurns.get(sessionId);
     if (!active) {
@@ -184,7 +240,7 @@ export class CodexChatService {
         void this.handleAppServerNotification(session.id, assistantMessageId, message);
       },
       (client, message) => {
-        this.handleAppServerRequest(client, message);
+        void this.handleAppServerRequest(session.id, client, message);
       },
       (error) => {
         const active = this.activeTurns.get(session.id);
@@ -199,6 +255,7 @@ export class CodexChatService {
       threadId: session.codex_thread_id,
       turnId: null,
       finished: false,
+      pendingUserInput: null,
       itemTargets: new Map()
     };
     this.activeTurns.set(session.id, active);
@@ -337,8 +394,46 @@ export class CodexChatService {
       return;
     }
 
+    if (message.method === "thread/status/changed") {
+      await this.handleThreadStatusChanged(sessionId, active, message);
+      return;
+    }
+
+    if (message.method === "serverRequest/resolved") {
+      await this.handleServerRequestResolved(sessionId, active, message);
+      return;
+    }
+
+    if (message.method === "turn/plan/updated" && this.messageBelongsToActiveTurn(message, active)) {
+      await this.handlePlanUpdated(sessionId, active, message);
+      return;
+    }
+
     if (message.method === "item/started" && this.messageBelongsToActiveTurn(message, active)) {
       await this.handleItemStarted(sessionId, active, message);
+      return;
+    }
+
+    const planDelta = extractPlanDeltaFromAppServerMessage(message);
+    if (planDelta && this.messageBelongsToActiveTurn(message, active)) {
+      const itemId = extractItemIdFromAppServerMessage(message);
+      const target = itemId ? active.itemTargets.get(itemId) : null;
+      if (target?.target === "activity") {
+        await this.messageStore.appendActivityContent(sessionId, assistantMessageId, target.activityId, planDelta);
+        await this.broadcastMessageUpdate(sessionId, assistantMessageId);
+      } else if (itemId) {
+        const activity = await this.messageStore.upsertActivity(sessionId, assistantMessageId, {
+          itemId,
+          kind: "thinking",
+          title: "Plan",
+          content: planDelta,
+          status: "streaming"
+        });
+        if (activity) {
+          active.itemTargets.set(itemId, { target: "activity", activityId: activity.id });
+          await this.broadcastMessageUpdate(sessionId, assistantMessageId);
+        }
+      }
       return;
     }
 
@@ -383,10 +478,18 @@ export class CodexChatService {
     }
   }
 
-  private handleAppServerRequest(client: CodexAppServerClient, message: AppServerMessage): void {
+  private async handleAppServerRequest(
+    sessionId: string,
+    client: CodexAppServerClient,
+    message: AppServerMessage
+  ): Promise<void> {
     const id = typeof message.id === "number" ? message.id : null;
     const method = typeof message.method === "string" ? message.method : "";
     if (id === null) {
+      return;
+    }
+    if (method === "item/tool/requestUserInput") {
+      await this.handleUserInputRequest(sessionId, client, id, message);
       return;
     }
     if (method === "item/commandExecution/requestApproval") {
@@ -400,9 +503,150 @@ export class CodexChatService {
     client.respond(id, { error: "Unsupported Agent Port app-server request" });
   }
 
+  private async handleUserInputRequest(
+    sessionId: string,
+    client: CodexAppServerClient,
+    requestId: number,
+    message: AppServerMessage
+  ): Promise<void> {
+    const active = this.activeTurns.get(sessionId);
+    if (!active || active.finished || !this.messageBelongsToActiveTurn(message, active)) {
+      client.respond(requestId, { answers: {} });
+      return;
+    }
+
+    const params = asRecord(message.params);
+    const questions = parseUserInputQuestions(params?.questions);
+    const threadId = params ? readString(params, "threadId") : null;
+    const turnId = params ? readString(params, "turnId") : null;
+    active.threadId = threadId ?? active.threadId;
+    active.turnId = turnId ?? active.turnId;
+    active.pendingUserInput = {
+      requestId,
+      client,
+      threadId,
+      turnId,
+      questions
+    };
+
+    const waitingInput: WaitingUserInput = {
+      kind: "user_input",
+      message: summarizeUserInputQuestions(questions),
+      questions,
+      requested_at: nowIso()
+    };
+    await this.sessionService.setWaitingUserInput(sessionId, waitingInput, null);
+    const activity = await this.messageStore.upsertActivity(sessionId, active.assistantMessageId, {
+      itemId: readString(params, "itemId") ?? `request-user-input:${requestId}`,
+      kind: "thinking",
+      title: "Waiting for user",
+      content: waitingInput.message,
+      status: "streaming"
+    });
+    if (activity) {
+      await this.broadcastMessageUpdate(sessionId, active.assistantMessageId);
+    }
+    this.broadcastSessionStatus(sessionId);
+  }
+
+  private async handleThreadStatusChanged(
+    sessionId: string,
+    active: ActiveTurn,
+    message: AppServerMessage
+  ): Promise<void> {
+    const params = asRecord(message.params);
+    const threadId = params ? readString(params, "threadId") : null;
+    if (threadId && active.threadId && threadId !== active.threadId) {
+      return;
+    }
+    const status = asRecord(params?.status);
+    const waitingOnUserInput =
+      readString(status, "type") === "active" &&
+      Array.isArray(status?.activeFlags) &&
+      status.activeFlags.includes("waitingOnUserInput");
+    if (waitingOnUserInput && !active.pendingUserInput) {
+      await this.sessionService.setWaitingUserInput(
+        sessionId,
+        {
+          kind: "user_input",
+          message: "Codex is waiting for input.",
+          questions: [],
+          requested_at: nowIso()
+        },
+        null
+      );
+      this.broadcastSessionStatus(sessionId);
+      return;
+    }
+    if (
+      !waitingOnUserInput &&
+      !active.pendingUserInput &&
+      this.sessionService.get(sessionId).task_status === "WAITING_FOR_USER"
+    ) {
+      await this.sessionService.setTaskState(sessionId, "RUNNING", null);
+      this.broadcastSessionStatus(sessionId);
+    }
+  }
+
+  private async handleServerRequestResolved(
+    sessionId: string,
+    active: ActiveTurn,
+    message: AppServerMessage
+  ): Promise<void> {
+    const params = asRecord(message.params);
+    const requestId = params ? readNumber(params, "requestId") : null;
+    if (requestId === null || active.pendingUserInput?.requestId !== requestId) {
+      return;
+    }
+    active.pendingUserInput = null;
+    if (this.sessionService.get(sessionId).task_status === "WAITING_FOR_USER") {
+      await this.sessionService.setTaskState(sessionId, "RUNNING", null);
+      this.broadcastSessionStatus(sessionId);
+    }
+  }
+
+  private async handlePlanUpdated(sessionId: string, active: ActiveTurn, message: AppServerMessage): Promise<void> {
+    const content = formatPlanUpdate(message);
+    if (!content) {
+      return;
+    }
+    const turnId = extractTurnIdFromAppServerMessage(message) ?? active.turnId ?? "current";
+    await this.messageStore.upsertActivity(sessionId, active.assistantMessageId, {
+      itemId: `turn-plan:${turnId}`,
+      kind: "thinking",
+      title: "Plan",
+      content,
+      status: "streaming"
+    });
+    await this.broadcastMessageUpdate(sessionId, active.assistantMessageId);
+  }
+
   private async handleItemStarted(sessionId: string, active: ActiveTurn, message: AppServerMessage): Promise<void> {
     const item = extractItemFromAppServerMessage(message);
-    if (!item || readString(item, "type") !== "agentMessage") {
+    if (!item) {
+      return;
+    }
+    const itemType = readString(item, "type");
+    if (itemType === "plan") {
+      const itemId = readString(item, "id");
+      if (!itemId) {
+        return;
+      }
+      const activity = await this.messageStore.upsertActivity(sessionId, active.assistantMessageId, {
+        itemId,
+        kind: "thinking",
+        title: "Plan",
+        content: readString(item, "text") ?? "",
+        status: "streaming",
+        startedAt: extractStartedAtIso(message)
+      });
+      if (activity) {
+        active.itemTargets.set(itemId, { target: "activity", activityId: activity.id });
+        await this.broadcastMessageUpdate(sessionId, active.assistantMessageId);
+      }
+      return;
+    }
+    if (itemType !== "agentMessage") {
       return;
     }
     const itemId = readString(item, "id");
@@ -550,6 +794,124 @@ function toPublicPermissionMode(mode: CodexPermissionModeConfig): PublicCodexPer
   };
 }
 
+function parseUserInputQuestions(value: unknown): WaitingUserInputQuestion[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item, index) => {
+      const question = asRecord(item);
+      if (!question) {
+        return null;
+      }
+      const id = readString(question, "id") ?? `question-${index + 1}`;
+      return {
+        id,
+        header: readString(question, "header") ?? "Codex",
+        question: readString(question, "question") ?? "Codex is waiting for input.",
+        isOther: readBoolean(question, "isOther"),
+        isSecret: readBoolean(question, "isSecret"),
+        options: parseUserInputOptions(question.options)
+      };
+    })
+    .filter((item): item is WaitingUserInputQuestion => item !== null);
+}
+
+function parseUserInputOptions(value: unknown): WaitingUserInputQuestion["options"] {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const options = value
+    .map((item) => {
+      const option = asRecord(item);
+      const label = readString(option, "label");
+      if (!label) {
+        return null;
+      }
+      return {
+        label,
+        description: readString(option, "description") ?? ""
+      };
+    })
+    .filter((item): item is NonNullable<WaitingUserInputQuestion["options"]>[number] => item !== null);
+  return options.length ? options : null;
+}
+
+function summarizeUserInputQuestions(questions: WaitingUserInputQuestion[]): string {
+  if (!questions.length) {
+    return "Codex is waiting for input.";
+  }
+  return questions
+    .map((question) => {
+      const options = question.options?.map((option) => `- ${option.label}: ${option.description}`.trim()).join("\n");
+      return options ? `${question.question}\n\n${options}` : question.question;
+    })
+    .join("\n\n");
+}
+
+function buildUserInputResponseAnswers(
+  questions: WaitingUserInputQuestion[],
+  text: string
+): Record<string, { answers: string[] }> {
+  if (!questions.length) {
+    return {};
+  }
+  return Object.fromEntries(
+    questions.map((question) => [question.id, { answers: [selectUserInputAnswer(question, text)] }])
+  );
+}
+
+function selectUserInputAnswer(question: WaitingUserInputQuestion, text: string): string {
+  const exactOption = question.options?.find((option) => option.label.toLowerCase() === text.toLowerCase());
+  if (exactOption) {
+    return exactOption.label;
+  }
+  if (isConfirmAnswer(text)) {
+    const confirmOption = question.options?.find((option) =>
+      /confirm|approve|accept|proceed|continue|implement|yes|ok/i.test(option.label)
+    );
+    if (confirmOption) {
+      return confirmOption.label;
+    }
+  }
+  return text;
+}
+
+function isConfirmAnswer(text: string): boolean {
+  return /^(confirm|confirm plan|approve|approved|accept|yes|y|ok|proceed|continue|implement)$/i.test(text.trim());
+}
+
+function extractPlanDeltaFromAppServerMessage(message: AppServerMessage): string | null {
+  if (message.method !== "item/plan/delta") {
+    return null;
+  }
+  return readString(asRecord(message.params), "delta");
+}
+
+function formatPlanUpdate(message: AppServerMessage): string {
+  const params = asRecord(message.params);
+  if (!params) {
+    return "";
+  }
+  const lines: string[] = [];
+  const explanation = readString(params, "explanation");
+  if (explanation) {
+    lines.push(explanation);
+  }
+  const plan = Array.isArray(params.plan) ? params.plan : [];
+  for (const rawStep of plan) {
+    const step = asRecord(rawStep);
+    const stepText = readString(step, "step");
+    if (!stepText) {
+      continue;
+    }
+    const status = readString(step, "status");
+    const marker = status === "completed" ? "[x]" : status === "inProgress" ? "[-]" : "[ ]";
+    lines.push(`- ${marker} ${stepText}`);
+  }
+  return lines.join("\n");
+}
+
 function asRecord(value: unknown): JsonRecord | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : null;
 }
@@ -568,6 +930,13 @@ function readNumber(record: JsonRecord | null, key: string): number | null {
   }
   const value = record[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readBoolean(record: JsonRecord | null, key: string): boolean {
+  if (!record) {
+    return false;
+  }
+  return record[key] === true;
 }
 
 function extractItemFromAppServerMessage(message: AppServerMessage): JsonRecord | null {

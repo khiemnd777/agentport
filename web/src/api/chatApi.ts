@@ -38,6 +38,13 @@ export function sendChatMessage(
   });
 }
 
+export function submitChatUserInput(sessionId: string, text: string): Promise<{ messages: ChatMessage[] }> {
+  return apiFetch(`/api/sessions/${sessionId}/messages/input`, {
+    method: "POST",
+    body: JSON.stringify({ text })
+  });
+}
+
 export function uploadChatAttachment(sessionId: string, file: File): Promise<{ attachment: ChatAttachment }> {
   const body = new FormData();
   body.append("file", file);

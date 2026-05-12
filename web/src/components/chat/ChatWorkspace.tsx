@@ -27,7 +27,8 @@ import type {
   PublicCodexModel,
   PublicCodexPermissionMode,
   PublicCodexReasoningEffort,
-  PublicRepo
+  PublicRepo,
+  WaitingUserInput
 } from "../../api/client";
 import { chatAttachmentContentUrl, uploadChatAttachment } from "../../api/chatApi";
 import SessionStatusBadge from "../sessions/SessionStatusBadge";
@@ -49,6 +50,7 @@ interface Props {
   onSelectedReasoningEffortChange: (reasoningEffort: CodexReasoningEffort) => void;
   onSelectedPermissionModeChange: (permissionMode: CodexPermissionMode) => void;
   onSubmitMessage: (prompt: string, attachmentIds: string[]) => Promise<void>;
+  onSubmitUserInput: (text: string) => Promise<void>;
   onStopTurn: () => Promise<void>;
   onCreateSession: () => void;
   onOpenConsole: () => void;
@@ -79,6 +81,7 @@ export default function ChatWorkspace({
   onSelectedReasoningEffortChange,
   onSelectedPermissionModeChange,
   onSubmitMessage,
+  onSubmitUserInput,
   onStopTurn,
   onCreateSession,
   onOpenConsole
@@ -93,6 +96,8 @@ export default function ChatWorkspace({
   const threadEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
+  const waitingForUser = activeSession?.task_status === "WAITING_FOR_USER";
+  const codexWorking = turnBusy && !waitingForUser;
   const composerDisabled = submitting || !activeSession || Boolean(activeSession?.archived_at);
   const uploadedAttachmentIds = useMemo(
     () =>
@@ -310,7 +315,10 @@ export default function ChatWorkspace({
     if (activeSession.archived_at) {
       return "Archived chat is read-only.";
     }
-    if (turnBusy) {
+    if (waitingForUser) {
+      return "Codex is waiting for confirmation...";
+    }
+    if (codexWorking) {
       return "Codex is working...";
     }
     if (sortedMessages.length > 0) {
@@ -403,91 +411,197 @@ export default function ChatWorkspace({
         )}
       </div>
 
-      <form
-        className={`${turnBusy ? "chat-composer waiting" : "chat-composer"}${dragActive ? " dragging-files" : ""}`}
-        onSubmit={handleSubmit}
-        onDragEnter={handleComposerDragEnter}
-        onDragOver={handleComposerDragOver}
-        onDragLeave={handleComposerDragLeave}
-        onDrop={handleComposerDrop}
-      >
-        <div className="composer-card">
-          <input
-            className="sr-only"
-            ref={fileInputRef}
-            type="file"
-            multiple
-            disabled={attachmentControlsDisabled}
-            onChange={handleFileInputChange}
-          />
-          {dragActive ? <div className="composer-drop-hint">Drop files to attach</div> : null}
-          {composerAttachments.length > 0 ? (
-            <ComposerAttachmentTray attachments={composerAttachments} onRemove={removeComposerAttachment} />
-          ) : null}
-          <textarea
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={handleComposerKeyDown}
-            onPaste={handleComposerPaste}
-            placeholder={placeholder}
-            disabled={composerDisabled || turnBusy}
-            rows={2}
-          />
-          <div className="composer-toolbar">
-            <div className="composer-toolbar-left">
-              <button
-                className="composer-icon-button muted"
-                type="button"
-                disabled={attachmentControlsDisabled}
-                title="Attach files"
-                aria-label="Attach files"
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <Paperclip size={20} />
-              </button>
-              <PermissionModePicker
-                permissionModes={permissionModes}
-                selectedPermissionMode={selectedPermissionMode}
-                disabled={permissionModes.length === 0 || turnBusy}
-                onSelectedPermissionModeChange={onSelectedPermissionModeChange}
-              />
-            </div>
-            <div className="composer-toolbar-right">
-              {turnBusy ? (
-                <span className="composer-busy-indicator">
-                  <span aria-hidden="true" /> Codex is working
-                </span>
-              ) : (
-                <ModelReasoningPicker
-                  models={models}
-                  selectedModel={selectedModel}
-                  reasoningEfforts={reasoningEfforts}
-                  selectedReasoningEffort={selectedReasoningEffort}
-                  disabled={models.length === 0 || reasoningEfforts.length === 0 || turnBusy}
-                  onSelectedModelChange={onSelectedModelChange}
-                  onSelectedReasoningEffortChange={onSelectedReasoningEffortChange}
-                />
-              )}
-              {turnBusy ? (
+      {waitingForUser ? (
+        <WaitingUserInputComposer
+          waitingInput={activeSession?.waiting_user_input ?? null}
+          cancelling={cancelling}
+          onSubmit={onSubmitUserInput}
+          onStop={() => void handleCancel()}
+        />
+      ) : (
+        <form
+          className={`${turnBusy ? "chat-composer waiting" : "chat-composer"}${dragActive ? " dragging-files" : ""}`}
+          onSubmit={handleSubmit}
+          onDragEnter={handleComposerDragEnter}
+          onDragOver={handleComposerDragOver}
+          onDragLeave={handleComposerDragLeave}
+          onDrop={handleComposerDrop}
+        >
+          <div className="composer-card">
+            <input
+              className="sr-only"
+              ref={fileInputRef}
+              type="file"
+              multiple
+              disabled={attachmentControlsDisabled}
+              onChange={handleFileInputChange}
+            />
+            {dragActive ? <div className="composer-drop-hint">Drop files to attach</div> : null}
+            {composerAttachments.length > 0 ? (
+              <ComposerAttachmentTray attachments={composerAttachments} onRemove={removeComposerAttachment} />
+            ) : null}
+            <textarea
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={handleComposerKeyDown}
+              onPaste={handleComposerPaste}
+              placeholder={placeholder}
+              disabled={composerDisabled || turnBusy}
+              rows={2}
+            />
+            <div className="composer-toolbar">
+              <div className="composer-toolbar-left">
                 <button
-                  className="composer-send-button stop"
+                  className="composer-icon-button muted"
                   type="button"
-                  disabled={cancelling}
-                  onClick={() => void handleCancel()}
-                  title="Stop"
+                  disabled={attachmentControlsDisabled}
+                  title="Attach files"
+                  aria-label="Attach files"
+                  onClick={() => fileInputRef.current?.click()}
                 >
-                  <Square size={18} />
+                  <Paperclip size={20} />
                 </button>
-              ) : (
-                <button className="composer-send-button" type="submit" disabled={sendDisabled} title="Send">
-                  <ArrowUp size={22} />
-                </button>
-              )}
+                <PermissionModePicker
+                  permissionModes={permissionModes}
+                  selectedPermissionMode={selectedPermissionMode}
+                  disabled={permissionModes.length === 0 || turnBusy}
+                  onSelectedPermissionModeChange={onSelectedPermissionModeChange}
+                />
+              </div>
+              <div className="composer-toolbar-right">
+                {turnBusy ? (
+                  <span className="composer-busy-indicator">
+                    <span aria-hidden="true" /> Codex is working
+                  </span>
+                ) : (
+                  <ModelReasoningPicker
+                    models={models}
+                    selectedModel={selectedModel}
+                    reasoningEfforts={reasoningEfforts}
+                    selectedReasoningEffort={selectedReasoningEffort}
+                    disabled={models.length === 0 || reasoningEfforts.length === 0 || turnBusy}
+                    onSelectedModelChange={onSelectedModelChange}
+                    onSelectedReasoningEffortChange={onSelectedReasoningEffortChange}
+                  />
+                )}
+                {turnBusy ? (
+                  <button
+                    className="composer-send-button stop"
+                    type="button"
+                    disabled={cancelling}
+                    onClick={() => void handleCancel()}
+                    title="Stop"
+                  >
+                    <Square size={18} />
+                  </button>
+                ) : (
+                  <button className="composer-send-button" type="submit" disabled={sendDisabled} title="Send">
+                    <ArrowUp size={22} />
+                  </button>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      </form>
+        </form>
+      )}
     </section>
+  );
+}
+
+function WaitingUserInputComposer({
+  waitingInput,
+  cancelling,
+  onSubmit,
+  onStop
+}: {
+  waitingInput: WaitingUserInput | null;
+  cancelling: boolean;
+  onSubmit: (text: string) => Promise<void>;
+  onStop: () => void;
+}) {
+  const [changesOpen, setChangesOpen] = useState(false);
+  const [changesText, setChangesText] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const confirmText = preferredConfirmAnswer(waitingInput);
+  const questionText = waitingInput?.message || "Codex is waiting for confirmation.";
+
+  useEffect(() => {
+    setChangesOpen(false);
+    setChangesText("");
+  }, [waitingInput?.requested_at]);
+
+  async function submit(text: string) {
+    const trimmed = text.trim();
+    if (!trimmed || submitting) {
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await onSubmit(trimmed);
+      setChangesText("");
+      setChangesOpen(false);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleSubmitChanges(event: FormEvent) {
+    event.preventDefault();
+    await submit(changesText);
+  }
+
+  return (
+    <div className="chat-composer waiting-user-input">
+      <div className="waiting-input-card">
+        <div className="waiting-input-header">
+          <div>
+            <span className="waiting-input-eyebrow">Waiting for user</span>
+            <strong>Codex is waiting for confirmation</strong>
+          </div>
+          <button className="composer-send-button stop" type="button" disabled={cancelling} onClick={onStop} title="Stop">
+            <Square size={18} />
+          </button>
+        </div>
+        <div className="waiting-input-question">
+          <MarkdownContent content={questionText} />
+        </div>
+        <div className="waiting-input-actions">
+          <button
+            className="icon-text-button primary"
+            type="button"
+            disabled={submitting}
+            onClick={() => void submit(confirmText)}
+          >
+            <Check size={17} /> {submitting ? "Sending..." : "Confirm plan"}
+          </button>
+          <button
+            className="icon-text-button secondary"
+            type="button"
+            disabled={submitting}
+            aria-expanded={changesOpen}
+            onClick={() => setChangesOpen((current) => !current)}
+          >
+            <MessageSquare size={17} /> Request changes
+          </button>
+        </div>
+        {changesOpen ? (
+          <form className="waiting-input-changes" onSubmit={handleSubmitChanges}>
+            <textarea
+              value={changesText}
+              onChange={(event) => setChangesText(event.target.value)}
+              placeholder="Tell Codex what to change before continuing..."
+              rows={3}
+            />
+            <button className="icon-text-button attention" type="submit" disabled={submitting || !changesText.trim()}>
+              <ArrowUp size={17} /> {submitting ? "Sending..." : "Send changes"}
+            </button>
+          </form>
+        ) : null}
+        <p className="waiting-input-context">
+          This browser chat controls a separate local Codex CLI session. The confirmation is sent only to this session.
+        </p>
+      </div>
+    </div>
   );
 }
 
@@ -958,6 +1072,12 @@ function formatCompactModelLabel(label: string): string {
 
 function formatCompactPermissionLabel(label: string): string {
   return label.replace(/\s+permissions$/i, "");
+}
+
+function preferredConfirmAnswer(waitingInput: WaitingUserInput | null): string {
+  const options = waitingInput?.questions.flatMap((question) => question.options ?? []) ?? [];
+  const match = options.find((option) => /confirm|approve|accept|proceed|continue|implement|yes|ok/i.test(option.label));
+  return match?.label ?? "Confirm plan";
 }
 
 function formatDuration(durationMs: number | null): string {

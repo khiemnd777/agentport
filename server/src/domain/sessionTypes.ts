@@ -10,6 +10,27 @@ export type TerminalStatus =
   | "CLOSED"
   | "ERROR";
 
+export interface WaitingUserInputOption {
+  label: string;
+  description: string;
+}
+
+export interface WaitingUserInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  isOther: boolean;
+  isSecret: boolean;
+  options: WaitingUserInputOption[] | null;
+}
+
+export interface WaitingUserInput {
+  kind: "user_input";
+  message: string;
+  questions: WaitingUserInputQuestion[];
+  requested_at: string;
+}
+
 export interface CodexSession {
   id: string;
   repo_key: string;
@@ -22,6 +43,7 @@ export interface CodexSession {
   task_status: import("./taskTypes").TaskStatus;
   active_task_id: string | null;
   codex_thread_id: string | null;
+  waiting_user_input: WaitingUserInput | null;
   created_at: string;
   updated_at: string;
   started_at: string | null;

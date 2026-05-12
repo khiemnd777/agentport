@@ -30,6 +30,15 @@ export function chatRoutes(sessionService: SessionService, codexChatService: Cod
     return c.json(result, 201);
   });
 
+  app.post("/sessions/:id/messages/input", async (c) => {
+    const sessionId = validateSessionId(c.req.param("id"));
+    const session = sessionService.get(sessionId);
+    const body = parseJsonObject(await c.req.json().catch(() => ({})));
+    const text = typeof body.text === "string" ? body.text : "";
+    const result = await codexChatService.submitUserInput(session, text);
+    return c.json(result, 201);
+  });
+
   app.post("/sessions/:id/messages/interrupt", async (c) => {
     const sessionId = validateSessionId(c.req.param("id"));
     await codexChatService.interrupt(sessionId);

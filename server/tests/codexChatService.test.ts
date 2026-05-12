@@ -71,6 +71,7 @@ const session: CodexSession = {
   task_status: "IDLE",
   active_task_id: null,
   codex_thread_id: null,
+  waiting_user_input: null,
   created_at: "2026-05-11T00:00:00.000Z",
   updated_at: "2026-05-11T00:00:00.000Z",
   started_at: null,
@@ -231,5 +232,111 @@ describe("codex chat service streaming", () => {
     const [stored] = await messageStore.list(session.id);
     expect(stored.activities[0].content).toBe("Tôi sẽ làm ở chế độ mockup/phân tích thôi.");
     expect(stored.content).toBe("Tôi dùng quy chuẩn `DESIGN.md`.");
+  });
+
+  test("bridges app-server user input requests through WAITING_FOR_USER", async () => {
+    const dataRoot = await mkdtemp(path.join(tmpdir(), "agent-port-chat-input-"));
+    tempRoots.push(dataRoot);
+    const messageStore = new ChatMessageStore(dataRoot);
+    await messageStore.init();
+    const assistantMessage = await messageStore.create({
+      sessionId: session.id,
+      role: "assistant",
+      content: "",
+      status: "streaming",
+      turnId: "turn-1"
+    });
+    let storedSession: CodexSession = { ...session, task_status: "RUNNING" };
+    const responses: Array<{ id: number; result: unknown }> = [];
+    const broadcasts: unknown[] = [];
+    const service = new CodexChatService(
+      config,
+      {
+        setCodexThreadId: async () => storedSession,
+        setTaskState: async (_sessionId: string, taskStatus: CodexSession["task_status"]) => {
+          storedSession = {
+            ...storedSession,
+            task_status: taskStatus,
+            waiting_user_input: taskStatus === "WAITING_FOR_USER" ? storedSession.waiting_user_input : null
+          };
+          return storedSession;
+        },
+        setWaitingUserInput: async (_sessionId: string, waitingUserInput: CodexSession["waiting_user_input"]) => {
+          storedSession = {
+            ...storedSession,
+            task_status: "WAITING_FOR_USER",
+            waiting_user_input: waitingUserInput
+          };
+          return storedSession;
+        },
+        get: () => storedSession,
+        getPublic: () => storedSession
+      } as never,
+      messageStore,
+      { broadcast: (_sessionId: string, payload: unknown) => broadcasts.push(payload) } as never
+    );
+    const client = {
+      respond: (id: number, result: unknown) => responses.push({ id, result }),
+      request: async () => ({}),
+      close: () => undefined
+    };
+    const serviceInternals = service as unknown as {
+      activeTurns: Map<string, unknown>;
+      handleAppServerRequest: (
+        sessionId: string,
+        client: { respond: (id: number, result: unknown) => void; request: () => Promise<unknown>; close: () => void },
+        message: Record<string, unknown>
+      ) => Promise<void>;
+    };
+    serviceInternals.activeTurns.set(session.id, {
+      client,
+      assistantMessageId: assistantMessage.id,
+      threadId: "thread-1",
+      turnId: "turn-1",
+      finished: false,
+      pendingUserInput: null,
+      itemTargets: new Map()
+    });
+
+    await serviceInternals.handleAppServerRequest(session.id, client, {
+      id: 42,
+      method: "item/tool/requestUserInput",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "input-1",
+        questions: [
+          {
+            id: "confirm",
+            header: "Plan",
+            question: "Confirm this plan?",
+            isOther: true,
+            isSecret: false,
+            options: [{ label: "Proceed", description: "Run the approved plan." }]
+          }
+        ]
+      }
+    });
+
+    expect(storedSession.task_status).toBe("WAITING_FOR_USER");
+    expect(storedSession.waiting_user_input?.message).toContain("Confirm this plan?");
+    expect(responses).toHaveLength(0);
+
+    const result = await service.submitUserInput(storedSession, "Confirm plan");
+
+    expect(result.messages[0]?.content).toBe("Confirm plan");
+    expect(storedSession.task_status).toBe("RUNNING");
+    expect(storedSession.waiting_user_input).toBeNull();
+    expect(responses).toEqual([
+      {
+        id: 42,
+        result: {
+          answers: {
+            confirm: { answers: ["Proceed"] }
+          }
+        }
+      }
+    ]);
+    expect(broadcasts.length).toBeGreaterThan(0);
   });
 });
