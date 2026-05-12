@@ -1,0 +1,16 @@
+{
+  "name": "agent-port",
+  "private": true,
+  "type": "module",
+  "workspaces": ["server", "web"],
+  "scripts": {
+    "dev": "bun run --cwd server dev & bun run --cwd web dev",
+    "dev:server": "bun run --cwd server dev",
+    "dev:web": "bun run --cwd web dev",
+    "start": "bun run --cwd server start",
+    "build": "bun run --cwd server build && bun run --cwd web build",
+    "typecheck": "bun run --cwd server typecheck && bun run --cwd web typecheck",
+    "test": "bun run --cwd server test && bun run --cwd web test",
+    "push:vapid": "bun run --cwd server web-push generate-vapid-keys --json"
+  }
+}

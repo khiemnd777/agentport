@@ -1,0 +1,15 @@
+node_modules/
+server/dist/
+web/dist/
+.env
+.env.local
+config.json
+data/sessions/*.json
+data/tasks/*.json
+data/messages/*.json
+data/events/*.jsonl
+data/logs/*.log
+data/attachments/
+data/auth/
+data/notifications/
+.DS_Store

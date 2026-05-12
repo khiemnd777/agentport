@@ -1,0 +1,77 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8787
+  },
+  "auth": {
+    "requirePassword": true
+  },
+  "repos": {
+    "noah": {
+      "label": "Noah",
+      "path": "/Users/khiem/projects/noah"
+    },
+    "luca_fe": {
+      "label": "Luca Frontend",
+      "path": "/Users/khiem/projects/luca_fe"
+    }
+  },
+  "defaultRepo": "noah",
+  "codex": {
+    "command": "codex",
+    "defaultArgs": [],
+    "defaultModel": "gpt-5.5",
+    "models": [
+      { "id": "gpt-5.5", "label": "GPT-5.5" },
+      { "id": "gpt-5.4", "label": "GPT-5.4" },
+      { "id": "gpt-5.4-mini", "label": "GPT-5.4 Mini" },
+      { "id": "gpt-5.3-codex", "label": "GPT-5.3 Codex" },
+      { "id": "gpt-5.3-codex-spark", "label": "GPT-5.3 Codex Spark" }
+    ],
+    "defaultReasoningEffort": "medium",
+    "reasoningEfforts": [
+      { "id": "low", "label": "Low" },
+      { "id": "medium", "label": "Medium" },
+      { "id": "high", "label": "High" },
+      { "id": "xhigh", "label": "Extra High" }
+    ],
+    "defaultPermissionMode": "default",
+    "permissionModes": [
+      {
+        "id": "default",
+        "label": "Default permissions",
+        "description": "Ask before sensitive actions while keeping the workspace sandbox on.",
+        "approvalPolicy": "on-request",
+        "approvalsReviewer": "user",
+        "sandbox": "workspace-write"
+      },
+      {
+        "id": "auto-review",
+        "label": "Auto-review",
+        "description": "Route eligible approval requests through Codex auto-review in the workspace sandbox.",
+        "approvalPolicy": "on-request",
+        "approvalsReviewer": "auto_review",
+        "sandbox": "workspace-write"
+      },
+      {
+        "id": "full-access",
+        "label": "Full access",
+        "description": "Run without sandbox or approval prompts. Use only with trusted repositories.",
+        "approvalPolicy": "never",
+        "approvalsReviewer": "user",
+        "sandbox": "danger-full-access",
+        "highRisk": true
+      }
+    ],
+    "taskTimeoutMinutes": 0
+  },
+  "limits": {
+    "maxActiveSessions": 3,
+    "maxActiveTasks": 1,
+    "maxLogBytesPerSession": 10485760
+  },
+  "sessions": {
+    "autoArchiveStoppedAfterMinutes": 1440,
+    "deleteArchivedAfterDays": 0
+  }
+}

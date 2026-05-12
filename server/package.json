@@ -1,0 +1,23 @@
+{
+  "name": "agent-port-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --env-file=../.env --watch src/index.ts",
+    "build": "bun build src/index.ts --target=bun --external node-pty --outdir=dist",
+    "start": "bun --env-file=../.env dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "hono": "^4.6.14",
+    "node-pty": "^1.0.0",
+    "web-push": "^3.6.7"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.14",
+    "@types/node": "^22.10.2",
+    "@types/web-push": "^3.6.4",
+    "typescript": "^5.7.2"
+  }
+}

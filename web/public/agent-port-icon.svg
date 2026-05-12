@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Agent Port">
+  <rect width="512" height="512" rx="96" fill="#151b1f"/>
+  <path fill="#5bd89f" d="M145 154h222c22 0 40 18 40 40v125c0 22-18 40-40 40H145c-22 0-40-18-40-40V194c0-22 18-40 40-40Zm0 42v121h222V196H145Z"/>
+  <path fill="#f7fafb" d="M178 235h58v42h-58v-42Zm99 0h58v42h-58v-42Z"/>
+  <path fill="#5bd89f" d="M235 98h42v56h-42V98Zm-80 278h202v38H155v-38Z"/>
+</svg>

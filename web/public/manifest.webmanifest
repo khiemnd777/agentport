@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "Agent Port",
+  "short_name": "Agent Port",
+  "description": "Private browser control surface for local Codex CLI sessions.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7fafb",
+  "theme_color": "#151b1f",
+  "icons": [
+    {
+      "src": "/agent-port-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
