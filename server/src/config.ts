@@ -113,6 +113,10 @@ const DEFAULT_CODEX_PERMISSION_MODES: CodexPermissionModeConfig[] = [
   }
 ];
 const DEFAULT_CODEX_PERMISSION_MODE: CodexPermissionMode = "default";
+const DEFAULT_SERVER_CONFIG = {
+  host: "127.0.0.1",
+  port: 8787
+};
 
 async function firstExistingPath(paths: string[]): Promise<string | null> {
   for (const candidate of paths) {
@@ -212,6 +216,9 @@ function normalizeEnvValue(value: string): string {
 }
 
 function applyConfigDefaults(config: AppConfig): void {
+  config.server ??= { ...DEFAULT_SERVER_CONFIG };
+  config.server.host ||= DEFAULT_SERVER_CONFIG.host;
+  config.server.port ??= DEFAULT_SERVER_CONFIG.port;
   config.sessions ??= {
     autoArchiveStoppedAfterMinutes: 0,
     deleteArchivedAfterDays: 30
