@@ -9,6 +9,7 @@ data/tasks/*.json
 data/messages/*.json
 data/events/*.jsonl
 data/logs/*.log
+data/runtime/
 data/attachments/
 data/auth/
 data/notifications/

@@ -31,6 +31,29 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    emptyOutDir: true
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) {
+            return undefined;
+          }
+
+          if (id.includes("@xterm/")) {
+            return "terminal";
+          }
+
+          if (id.includes("lucide-react")) {
+            return "icons";
+          }
+
+          if (id.includes("react")) {
+            return "react";
+          }
+
+          return "vendor";
+        }
+      }
+    }
   }
 });

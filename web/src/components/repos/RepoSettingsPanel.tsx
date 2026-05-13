@@ -293,6 +293,11 @@ export default function RepoSettingsPanel({
               </button>
               <span>{folderName || "No folder selected"}</span>
             </div>
+            {directoryPickerSupported ? (
+              <div className="repo-folder-permission-note">
+                Browser may ask for permission to view files. Agent Port only reads the selected folder name and sends that name to the backend. No files are uploaded.
+              </div>
+            ) : null}
             {!directoryPickerSupported ? (
               <div className="repo-folder-name-row">
                 <label>
@@ -308,7 +313,11 @@ export default function RepoSettingsPanel({
                 </button>
               </div>
             ) : null}
-            {busy === "resolve" ? <div className="repo-resolve-state">Resolving folder on the MacBook...</div> : null}
+            {busy === "resolve" ? (
+              <div className="repo-resolve-state">
+                Folder name captured{folderName ? `: ${folderName}` : ""}. Resolving on the MacBook...
+              </div>
+            ) : null}
             {candidates.length ? (
               <div className="repo-candidate-list">
                 {candidates.map((candidate) => (

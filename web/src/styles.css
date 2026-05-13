@@ -900,6 +900,12 @@ textarea:disabled {
   gap: 10px;
 }
 
+.repo-folder-permission-note {
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .repo-resolve-state {
   color: var(--color-muted-strong);
   font-size: 13px;
