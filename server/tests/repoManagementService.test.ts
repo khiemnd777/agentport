@@ -1,15 +1,33 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { AppConfig } from "../src/config";
 import { loadConfigFile } from "../src/config";
 import { RepoManagementService } from "../src/services/repoManagementService";
 import { RepoRegistry } from "../src/services/repoRegistry";
 
 const tempRoots: string[] = [];
+const repoDiscoveryEnvKeys = ["RCD_REPO_SEARCH_ROOTS", "RCD_REPO_SEARCH_MAX_DEPTH"] as const;
+const previousRepoDiscoveryEnv = new Map<(typeof repoDiscoveryEnvKeys)[number], string | undefined>();
+
+beforeEach(() => {
+  previousRepoDiscoveryEnv.clear();
+  for (const key of repoDiscoveryEnvKeys) {
+    previousRepoDiscoveryEnv.set(key, process.env[key]);
+    process.env[key] = "";
+  }
+});
 
 afterEach(async () => {
+  for (const key of repoDiscoveryEnvKeys) {
+    const previous = previousRepoDiscoveryEnv.get(key);
+    if (previous === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = previous;
+    }
+  }
   await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 

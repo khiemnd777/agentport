@@ -1,4 +1,4 @@
-import { useRef, useState, type ChangeEvent } from "react";
+import { useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -10,6 +10,10 @@ import {
   X
 } from "lucide-react";
 import type { PublicRepo, RepoDiscoveryStatus, RepoResolveCandidate } from "../../api/client";
+
+interface DirectoryPickerWindow extends Window {
+  showDirectoryPicker?: (options?: { mode?: "read" | "readwrite" }) => Promise<{ name: string }>;
+}
 
 interface Props {
   repos: PublicRepo[];
@@ -45,15 +49,17 @@ export default function RepoSettingsPanel({
   onSetDefaultRepo,
   onRestartServer
 }: Props) {
-  const folderInputRef = useRef<HTMLInputElement | null>(null);
   const [label, setLabel] = useState("");
   const [repoKey, setRepoKey] = useState("");
   const [folderName, setFolderName] = useState("");
+  const [manualFolderName, setManualFolderName] = useState("");
   const [candidates, setCandidates] = useState<RepoResolveCandidate[]>([]);
   const [selectedCandidateId, setSelectedCandidateId] = useState("");
   const [busy, setBusy] = useState<"idle" | "refresh" | "resolve" | "add" | "remove" | "default" | "restart">("idle");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const directoryPickerSupported =
+    typeof window !== "undefined" && typeof (window as DirectoryPickerWindow).showDirectoryPicker === "function";
 
   const canAdd =
     busy === "idle" &&
@@ -82,11 +88,32 @@ export default function RepoSettingsPanel({
     });
   }
 
-  async function handleFolderChange(event: ChangeEvent<HTMLInputElement>) {
-    const selectedFolderName = readFolderName(event.currentTarget.files);
-    event.currentTarget.value = "";
+  async function handleSelectFolder() {
+    const picker = (window as DirectoryPickerWindow).showDirectoryPicker;
+    if (!picker) {
+      setError("This browser does not support folder selection. Enter the folder name below.");
+      return;
+    }
+
+    try {
+      const handle = await picker.call(window, { mode: "read" });
+      await resolveFolderName(handle.name);
+    } catch (err) {
+      if ((err as DOMException).name === "AbortError") {
+        return;
+      }
+      setError((err as Error).message || "Could not select the project folder.");
+    }
+  }
+
+  async function handleResolveManualFolder() {
+    await resolveFolderName(manualFolderName);
+  }
+
+  async function resolveFolderName(value: string) {
+    const selectedFolderName = value.trim();
     if (!selectedFolderName) {
-      setError("Select a project folder that contains files.");
+      setError("Enter a project folder name.");
       return;
     }
 
@@ -94,6 +121,7 @@ export default function RepoSettingsPanel({
     setFolderName(selectedFolderName);
     setLabel(nextLabel);
     setRepoKey((current) => current || slugifyRepoKey(nextLabel || selectedFolderName));
+    setManualFolderName(selectedFolderName);
     setCandidates([]);
     setSelectedCandidateId("");
 
@@ -134,6 +162,7 @@ export default function RepoSettingsPanel({
       setLabel("");
       setRepoKey("");
       setFolderName("");
+      setManualFolderName("");
       setCandidates([]);
       setSelectedCandidateId("");
       setMessage("Repository added.");
@@ -259,19 +288,26 @@ export default function RepoSettingsPanel({
               />
             </label>
             <div className="repo-folder-picker-row">
-              <button type="button" className="icon-text-button secondary" onClick={() => folderInputRef.current?.click()} disabled={busy !== "idle"}>
+              <button type="button" className="icon-text-button secondary" onClick={handleSelectFolder} disabled={busy !== "idle" || !directoryPickerSupported}>
                 <FolderPlus size={15} /> Select project folder
               </button>
               <span>{folderName || "No folder selected"}</span>
-              <input
-                ref={folderInputRef}
-                className="visually-hidden"
-                type="file"
-                multiple
-                onChange={handleFolderChange}
-                {...{ webkitdirectory: "", directory: "" }}
-              />
             </div>
+            {!directoryPickerSupported ? (
+              <div className="repo-folder-name-row">
+                <label>
+                  <span>Folder name</span>
+                  <input
+                    value={manualFolderName}
+                    onChange={(event) => setManualFolderName(event.target.value)}
+                    placeholder="noah"
+                  />
+                </label>
+                <button type="button" className="icon-text-button secondary" onClick={handleResolveManualFolder} disabled={busy !== "idle"}>
+                  Resolve folder
+                </button>
+              </div>
+            ) : null}
             {busy === "resolve" ? <div className="repo-resolve-state">Resolving folder on the MacBook...</div> : null}
             {candidates.length ? (
               <div className="repo-candidate-list">
@@ -308,13 +344,6 @@ export default function RepoSettingsPanel({
       </section>
     </div>
   );
-}
-
-function readFolderName(files: FileList | null): string {
-  const firstFile = files?.item(0) as (File & { webkitRelativePath?: string }) | null;
-  const relativePath = firstFile?.webkitRelativePath ?? "";
-  const firstSegment = relativePath.split("/").find(Boolean);
-  return firstSegment ?? "";
 }
 
 function slugifyRepoKey(value: string): string {

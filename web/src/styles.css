@@ -867,11 +867,13 @@ textarea:disabled {
   font-weight: 800;
 }
 
-.repo-add-form > label input {
+.repo-add-form > label input,
+.repo-folder-name-row input {
   width: 100%;
 }
 
-.repo-add-form > label input {
+.repo-add-form > label input,
+.repo-folder-name-row input {
   border: 1px solid var(--color-input-border);
   border-radius: 8px;
   background: var(--color-bg-surface);
@@ -880,7 +882,8 @@ textarea:disabled {
   outline: none;
 }
 
-.repo-add-form > label input:focus {
+.repo-add-form > label input:focus,
+.repo-folder-name-row input:focus {
   border-color: var(--color-primary);
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
@@ -888,6 +891,13 @@ textarea:disabled {
 .repo-folder-picker-row {
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.repo-folder-name-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
 }
 
 .repo-resolve-state {
@@ -2816,6 +2826,10 @@ textarea:disabled {
 
   .repo-candidate-row {
     grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .repo-folder-name-row {
+    grid-template-columns: 1fr;
   }
 
   .repo-candidate-row em {
