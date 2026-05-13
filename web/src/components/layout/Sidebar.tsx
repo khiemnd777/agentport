@@ -10,6 +10,7 @@ interface Props {
   activeSessionId: string | null;
   showHistory: boolean;
   onSelectRepo: (repoKey: string) => void;
+  onManageRepos: () => void;
   onSelectSession: (sessionId: string) => void;
   onCreateSession: () => void;
   onToggleHistory: (showHistory: boolean) => void;
@@ -24,6 +25,7 @@ export default function Sidebar({
   activeSessionId,
   showHistory,
   onSelectRepo,
+  onManageRepos,
   onSelectSession,
   onCreateSession,
   onToggleHistory,
@@ -32,7 +34,7 @@ export default function Sidebar({
 }: Props) {
   return (
     <aside className="sidebar">
-      <RepoSwitcher repos={repos} selectedRepoKey={selectedRepoKey} onSelect={onSelectRepo} />
+      <RepoSwitcher repos={repos} selectedRepoKey={selectedRepoKey} onSelect={onSelectRepo} onManage={onManageRepos} />
       <CreateSessionButton disabled={!selectedRepoKey} onCreate={onCreateSession} />
       <div className="sidebar-section-row">
         <div className="sidebar-section-title">Sessions</div>

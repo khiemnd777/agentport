@@ -7,6 +7,7 @@ import TopBar from "../components/layout/TopBar";
 import CodexTerminal from "../components/terminal/CodexTerminal";
 import GitStatusPanel from "../components/git/GitStatusPanel";
 import NotificationControl from "../components/notifications/NotificationControl";
+import RepoSettingsPanel from "../components/repos/RepoSettingsPanel";
 import {
   apiFetch,
   chatSocketUrl,
@@ -20,10 +21,18 @@ import {
   type PublicCodexPermissionMode,
   type PublicCodexReasoningEffort,
   type PublicRepo,
+  type RepoDiscoveryStatus,
   type TaskStatus,
   type TerminalStatus
 } from "../api/client";
-import { getRepos } from "../api/reposApi";
+import {
+  addRepo as addRepoRequest,
+  getRepos,
+  removeRepo as removeRepoRequest,
+  requestServerRestart,
+  resolveRepoFolder,
+  setDefaultRepo as setDefaultRepoRequest
+} from "../api/reposApi";
 import { archiveSession, closeSession, createSession, deleteSession, listSessions } from "../api/sessionsApi";
 import { getGitDiff, getGitStatus } from "../api/gitApi";
 import { interruptChat, listChatMessages, listCodexModels, sendChatMessage, submitChatUserInput } from "../api/chatApi";
@@ -72,6 +81,9 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("console");
   const [error, setError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [defaultRepoKey, setDefaultRepoKey] = useState("");
+  const [repoDiscovery, setRepoDiscovery] = useState<RepoDiscoveryStatus | null>(null);
+  const [repoSettingsOpen, setRepoSettingsOpen] = useState(false);
 
   const selectedRepo = useMemo(
     () => repos.find((repo) => repo.key === selectedRepoKey) ?? null,
@@ -85,6 +97,18 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
     () => sessions.find((session) => session.id === activeSessionId) ?? null,
     [sessions, activeSessionId]
   );
+
+  const refreshRepos = useCallback(async () => {
+    const result = await getRepos();
+    setRepos(result.repos);
+    setDefaultRepoKey(result.defaultRepo);
+    setRepoDiscovery(result.repoDiscovery);
+    setSelectedRepoKey((current) =>
+      current && result.repos.some((repo) => repo.key === current)
+        ? current
+        : result.defaultRepo || (result.repos[0]?.key ?? null)
+    );
+  }, []);
 
   const refreshSessions = useCallback(async () => {
     const result = await listSessions({ includeArchived: showHistory });
@@ -131,6 +155,7 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
     setRefreshing(true);
     setError(null);
     try {
+      await refreshRepos();
       await refreshSessions();
       await refreshMessages(activeSessionId);
       await refreshGit(activeSessionId, selectedFile);
@@ -139,7 +164,7 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
     } finally {
       setRefreshing(false);
     }
-  }, [activeSessionId, refreshGit, refreshMessages, refreshSessions, selectedFile]);
+  }, [activeSessionId, refreshGit, refreshMessages, refreshRepos, refreshSessions, selectedFile]);
 
   useEffect(() => {
     async function bootstrap() {
@@ -152,6 +177,8 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
         const storedActiveSessionId = window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
         const storedActiveSession = sessionResult.sessions.find((session) => session.id === storedActiveSessionId);
         setRepos(repoResult.repos);
+        setDefaultRepoKey(repoResult.defaultRepo);
+        setRepoDiscovery(repoResult.repoDiscovery);
         setSelectedRepoKey(storedActiveSession?.repo_key ?? repoResult.defaultRepo);
         setSessions(sessionResult.sessions);
         setActiveSessionId(storedActiveSession?.id ?? sessionResult.sessions[0]?.id ?? null);
@@ -473,6 +500,39 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
     await refreshGit(activeSessionId, file);
   }
 
+  async function handleAddRepo(input: {
+    folderName: string;
+    label: string;
+    key: string;
+    candidateId?: string;
+  }) {
+    const result = await addRepoRequest(input);
+    setRepos(result.repos);
+    setDefaultRepoKey(result.defaultRepo);
+    setSelectedRepoKey(result.repo.key);
+  }
+
+  async function handleRemoveRepo(repoKey: string) {
+    const result = await removeRepoRequest(repoKey);
+    setRepos(result.repos);
+    setDefaultRepoKey(result.defaultRepo);
+    setSelectedRepoKey((current) =>
+      current && result.repos.some((repo) => repo.key === current)
+        ? current
+        : result.defaultRepo || (result.repos[0]?.key ?? null)
+    );
+  }
+
+  async function handleSetDefaultRepo(repoKey: string) {
+    const result = await setDefaultRepoRequest(repoKey);
+    setRepos(result.repos);
+    setDefaultRepoKey(result.defaultRepo);
+  }
+
+  async function handleRestartServer() {
+    await requestServerRestart();
+  }
+
   const chatTurnBusy = ["CREATED", "RUNNING", "WAITING_FOR_USER"].includes(activeSession?.task_status ?? "IDLE");
 
   const consolePanel = <CodexTerminal sessionId={activeSessionId} onStatus={handleTerminalStatus} />;
@@ -556,6 +616,7 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
             activeSessionId={activeSessionId}
             showHistory={showHistory}
             onSelectRepo={setSelectedRepoKey}
+            onManageRepos={() => setRepoSettingsOpen(true)}
             onSelectSession={(sessionId) => {
               setActiveSessionId(sessionId);
               setMobileTab("chat");
@@ -573,6 +634,20 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
         mobileTab={mobileTab}
         onMobileTabChange={setMobileTab}
       />
+      {repoSettingsOpen ? (
+        <RepoSettingsPanel
+          repos={repos}
+          defaultRepo={defaultRepoKey}
+          repoDiscovery={repoDiscovery}
+          onClose={() => setRepoSettingsOpen(false)}
+          onRefresh={refreshRepos}
+          onResolveFolder={resolveRepoFolder}
+          onAddRepo={handleAddRepo}
+          onRemoveRepo={handleRemoveRepo}
+          onSetDefaultRepo={handleSetDefaultRepo}
+          onRestartServer={handleRestartServer}
+        />
+      ) : null}
     </>
   );
 }

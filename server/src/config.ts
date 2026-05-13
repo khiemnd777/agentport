@@ -13,6 +13,10 @@ export interface AppConfig {
   };
   repos: Record<string, RepoConfig>;
   defaultRepo: string;
+  repoDiscovery: {
+    searchRoots: string[];
+    maxDepth: number;
+  };
   codex: {
     command: string;
     defaultArgs: string[];
@@ -117,6 +121,10 @@ const DEFAULT_SERVER_CONFIG = {
   host: "127.0.0.1",
   port: 8787
 };
+const DEFAULT_REPO_DISCOVERY_CONFIG = {
+  searchRoots: [] as string[],
+  maxDepth: 4
+};
 
 async function firstExistingPath(paths: string[]): Promise<string | null> {
   for (const candidate of paths) {
@@ -150,11 +158,7 @@ export async function loadConfig(): Promise<{ config: AppConfig; paths: RuntimeP
     );
   }
 
-  const raw = await fs.readFile(configPath, "utf8");
-  const config = JSON.parse(raw) as AppConfig;
-  applyConfigDefaults(config);
-  applyEnvOverrides(config);
-  validateConfig(config);
+  const config = await loadConfigFile(configPath);
 
   return {
     config,
@@ -165,6 +169,16 @@ export async function loadConfig(): Promise<{ config: AppConfig; paths: RuntimeP
       configPath
     }
   };
+}
+
+export async function loadConfigFile(configPath: string): Promise<AppConfig> {
+  await loadRootEnvFile();
+  const raw = await fs.readFile(configPath, "utf8");
+  const config = JSON.parse(raw) as AppConfig;
+  applyConfigDefaults(config);
+  applyEnvOverrides(config);
+  validateConfig(config);
+  return config;
 }
 
 function expandConfigPath(configPath: string | undefined): string[] {
@@ -225,6 +239,9 @@ function applyConfigDefaults(config: AppConfig): void {
   };
   config.sessions.autoArchiveStoppedAfterMinutes ??= 0;
   config.sessions.deleteArchivedAfterDays ??= 30;
+  config.repoDiscovery ??= { ...DEFAULT_REPO_DISCOVERY_CONFIG };
+  config.repoDiscovery.searchRoots = normalizeRepoSearchRoots(config.repoDiscovery.searchRoots);
+  config.repoDiscovery.maxDepth = normalizeRepoDiscoveryDepth(config.repoDiscovery.maxDepth);
   config.codex.models = normalizeCodexModels(config.codex.models);
   config.codex.defaultModel = normalizeDefaultModel(config.codex.defaultModel, config.codex.models);
   config.codex.reasoningEfforts = normalizeCodexReasoningEfforts(config.codex.reasoningEfforts);
@@ -267,6 +284,14 @@ function applyEnvOverrides(config: AppConfig): void {
     "RCD_DELETE_ARCHIVED_AFTER_DAYS",
     config.sessions.deleteArchivedAfterDays
   );
+  config.repoDiscovery.searchRoots = readListEnv(
+    "RCD_REPO_SEARCH_ROOTS",
+    config.repoDiscovery.searchRoots
+  );
+  config.repoDiscovery.maxDepth = readNumberEnv(
+    "RCD_REPO_SEARCH_MAX_DEPTH",
+    config.repoDiscovery.maxDepth
+  );
 }
 
 function readStringEnv(name: string, fallback: string): string {
@@ -286,6 +311,14 @@ function readNumberEnv(name: string, fallback: number): number {
   return parsed;
 }
 
+function readListEnv(name: string, fallback: string[]): string[] {
+  const value = process.env[name];
+  if (!value || !value.trim()) {
+    return fallback;
+  }
+  return normalizeRepoSearchRoots(value.split(","));
+}
+
 function validateConfig(config: AppConfig): void {
   if (!config.server || typeof config.server.host !== "string" || typeof config.server.port !== "number") {
     throw new Error("Invalid server config");
@@ -298,6 +331,14 @@ function validateConfig(config: AppConfig): void {
   }
   if (!config.repos[config.defaultRepo]) {
     throw new Error("defaultRepo must point at a whitelisted repo key");
+  }
+  if (
+    !config.repoDiscovery ||
+    !Array.isArray(config.repoDiscovery.searchRoots) ||
+    config.repoDiscovery.maxDepth < 1 ||
+    config.repoDiscovery.maxDepth > 8
+  ) {
+    throw new Error("Invalid repo discovery config");
   }
   if (
     !config.codex?.command ||
@@ -329,6 +370,34 @@ function validateConfig(config: AppConfig): void {
   ) {
     throw new Error("Invalid sessions config");
   }
+}
+
+function normalizeRepoSearchRoots(searchRoots: string[] | undefined): string[] {
+  if (!Array.isArray(searchRoots)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const item of searchRoots) {
+    const root = typeof item === "string" ? item.trim() : "";
+    if (!root) {
+      continue;
+    }
+    const resolved = path.resolve(root);
+    if (seen.has(resolved)) {
+      continue;
+    }
+    seen.add(resolved);
+    normalized.push(resolved);
+  }
+  return normalized;
+}
+
+function normalizeRepoDiscoveryDepth(maxDepth: number | undefined): number {
+  if (typeof maxDepth !== "number" || !Number.isFinite(maxDepth)) {
+    return DEFAULT_REPO_DISCOVERY_CONFIG.maxDepth;
+  }
+  return Math.min(8, Math.max(1, Math.trunc(maxDepth)));
 }
 
 function normalizeCodexModels(models: CodexModelConfig[] | undefined): CodexModelConfig[] {

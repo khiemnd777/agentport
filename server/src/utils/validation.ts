@@ -11,6 +11,31 @@ export function validateRepoKey(value: unknown): string {
   return value;
 }
 
+export function validateRepoLabel(value: unknown): string {
+  const label = typeof value === "string" ? value.trim() : "";
+  if (!label || label.length > 80 || /[\u0000-\u001f\u007f]/.test(label)) {
+    throw new Error("Invalid repo label");
+  }
+  return label;
+}
+
+export function validateFolderName(value: unknown): string {
+  const folderName = typeof value === "string" ? value.trim() : "";
+  if (
+    !folderName ||
+    folderName.length > 255 ||
+    folderName === "." ||
+    folderName === ".." ||
+    folderName.includes("\0") ||
+    folderName.includes("/") ||
+    folderName.includes("\\") ||
+    path.basename(folderName) !== folderName
+  ) {
+    throw new Error("Invalid folder name");
+  }
+  return folderName;
+}
+
 export function validateSessionId(value: unknown): string {
   if (typeof value !== "string" || !idPattern.test(value)) {
     throw new Error("Invalid session id");

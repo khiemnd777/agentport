@@ -8,9 +8,10 @@ import { notFound } from "../utils/httpErrors";
 export class RepoRegistry {
   private readonly repos = new Map<string, Repo>();
 
-  constructor(private readonly config: AppConfig) {}
+  constructor(private config: AppConfig) {}
 
   async init(): Promise<void> {
+    this.repos.clear();
     for (const [key, repoConfig] of Object.entries(this.config.repos)) {
       validateRepoKey(key);
       const repoPath = path.resolve(repoConfig.path);
@@ -24,6 +25,11 @@ export class RepoRegistry {
         path: repoPath
       });
     }
+  }
+
+  async reload(config: AppConfig): Promise<void> {
+    this.config = config;
+    await this.init();
   }
 
   getDefaultRepoKey(): string {

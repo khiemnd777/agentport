@@ -6,6 +6,7 @@ import { authRoutes } from "./auth/authRoutes";
 import { requireAuth } from "./auth/sessionAuth";
 import { AppError } from "./utils/httpErrors";
 import { RepoRegistry } from "./services/repoRegistry";
+import { RepoManagementService } from "./services/repoManagementService";
 import { EventStore } from "./services/eventStore";
 import { LogStore } from "./services/logStore";
 import { GitService } from "./services/gitService";
@@ -17,8 +18,10 @@ import { FileContentService } from "./services/fileContentService";
 import { CodexChatService } from "./services/codexChatService";
 import { SessionCleanupService } from "./services/sessionCleanupService";
 import { PushNotificationService } from "./services/pushNotificationService";
+import { ServerControlService } from "./services/serverControlService";
 import { PtySessionManager } from "./pty/PtySessionManager";
 import { repoRoutes } from "./routes/repoRoutes";
+import { adminRoutes } from "./routes/adminRoutes";
 import { sessionRoutes } from "./routes/sessionRoutes";
 import { taskRoutes } from "./routes/taskRoutes";
 import { chatRoutes } from "./routes/chatRoutes";
@@ -39,6 +42,7 @@ const authService = new AuthService(config, paths.dataRoot);
 await authService.init();
 const repoRegistry = new RepoRegistry(config);
 await repoRegistry.init();
+const repoManagementService = new RepoManagementService(config, paths.configPath, repoRegistry);
 
 const eventStore = new EventStore(paths.dataRoot);
 await eventStore.init();
@@ -84,6 +88,11 @@ setInterval(() => {
 }, 60_000);
 
 const app = new Hono();
+let serverRef: Bun.Server<RemoteSocketData> | null = null;
+const serverControlService = new ServerControlService(() => {
+  serverRef?.stop(true);
+  process.exit(0);
+});
 app.onError((error, c) => {
   if (error instanceof AppError) {
     return c.json({ error: error.message }, error.status as never);
@@ -97,7 +106,8 @@ app.onError((error, c) => {
 
 app.route("/api/auth", authRoutes(authService));
 app.use("/api/*", requireAuth(authService));
-app.route("/api/repos", repoRoutes(repoRegistry));
+app.route("/api/repos", repoRoutes(repoRegistry, repoManagementService, sessionService));
+app.route("/api/admin", adminRoutes(serverControlService));
 app.route("/api/sessions", sessionRoutes(sessionService, taskService, ptySessionManager, sessionCleanupService));
 app.route("/api", chatRoutes(sessionService, codexChatService));
 app.route("/api", attachmentRoutes(sessionService, attachmentService));
@@ -121,6 +131,7 @@ const server = Bun.serve({
     return serveFrontend(request, paths.webDist);
   }
 });
+serverRef = server;
 
 console.log(`Agent Port server listening on http://${server.hostname}:${server.port}`);
 

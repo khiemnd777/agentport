@@ -20,6 +20,7 @@ const config: AppConfig = {
   auth: { requirePassword: false },
   repos: {},
   defaultRepo: "noah",
+  repoDiscovery: { searchRoots: [], maxDepth: 4 },
   codex: {
     command: "codex",
     defaultArgs: [],

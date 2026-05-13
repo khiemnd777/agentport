@@ -8,6 +8,21 @@ export interface PublicRepo {
   label: string;
 }
 
+export interface RepoDiscoveryStatus {
+  configured: boolean;
+  searchRootCount: number;
+  maxDepth: number;
+}
+
+export interface RepoResolveCandidate {
+  id: string;
+  folderName: string;
+  suggestedKey: string;
+  label: string;
+  locationHint: string;
+  gitRepository: boolean;
+}
+
 export interface PublicCodexModel {
   id: string;
   label: string;

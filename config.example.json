@@ -13,6 +13,10 @@
     }
   },
   "defaultRepo": "noah",
+  "repoDiscovery": {
+    "searchRoots": ["/Users/khiem/projects"],
+    "maxDepth": 4
+  },
   "codex": {
     "command": "codex",
     "defaultArgs": [],

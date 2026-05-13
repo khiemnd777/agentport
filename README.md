@@ -41,6 +41,7 @@ cp .env.example .env
 ```
 
 Edit `config.json` so each repo key points at a real local repository on the MacBook. The browser only sends `repo_key`; raw repo paths are resolved on the backend from this whitelist.
+Set `repoDiscovery.searchRoots` to the local parent directories Agent Port may scan when the UI resolves a browser-selected folder name into a MacBook path.
 
 Edit `.env` for local hosts, ports, config path, and password:
 
@@ -50,6 +51,8 @@ RCD_SERVER_PORT=8787
 RCD_WEB_HOST=127.0.0.1
 RCD_WEB_PORT=5177
 RCD_CONFIG_PATH=../config.json
+RCD_REPO_SEARCH_ROOTS=/Users/khiem/projects
+RCD_REPO_SEARCH_MAX_DEPTH=4
 APP_PASSWORD=choose-a-strong-local-password
 ```
 
