@@ -31,6 +31,8 @@ interface ActiveTurn {
   finished: boolean;
   pendingUserInput: PendingUserInputRequest | null;
   itemTargets: Map<string, ItemTarget>;
+  currentAgentMessageItemId: string | null;
+  currentAgentMessageTarget: ItemTarget | null;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -282,7 +284,9 @@ export class CodexChatService {
       turnId: null,
       finished: false,
       pendingUserInput: null,
-      itemTargets: new Map()
+      itemTargets: new Map(),
+      currentAgentMessageItemId: null,
+      currentAgentMessageTarget: null
     };
     this.activeTurns.set(session.id, active);
 
@@ -466,8 +470,8 @@ export class CodexChatService {
 
     const delta = extractAgentDeltaFromCodexEvent(message);
     if (delta && this.messageBelongsToActiveTurn(message, active)) {
-      const itemId = extractItemIdFromAppServerMessage(message);
-      const target = itemId ? active.itemTargets.get(itemId) : null;
+      const itemId = extractItemIdFromAppServerMessage(message) ?? active.currentAgentMessageItemId;
+      const target = itemId ? active.itemTargets.get(itemId) : active.currentAgentMessageTarget;
       if (target?.target === "activity") {
         await this.messageStore.appendActivityContent(sessionId, assistantMessageId, target.activityId, delta);
         await this.broadcastMessageUpdate(sessionId, assistantMessageId);
@@ -680,6 +684,7 @@ export class CodexChatService {
     if (!itemId) {
       return;
     }
+    active.currentAgentMessageItemId = itemId;
     const phase = readString(item, "phase");
     const text = readString(item, "text") ?? "";
     if (phase === "commentary") {
@@ -692,19 +697,27 @@ export class CodexChatService {
         startedAt: extractStartedAtIso(message)
       });
       if (activity) {
-        active.itemTargets.set(itemId, { target: "activity", activityId: activity.id });
+        const target: ItemTarget = { target: "activity", activityId: activity.id };
+        active.itemTargets.set(itemId, target);
+        active.currentAgentMessageTarget = target;
         await this.broadcastMessageUpdate(sessionId, active.assistantMessageId);
       }
       return;
     }
 
-    active.itemTargets.set(itemId, { target: "assistant" });
+    const target: ItemTarget = { target: "assistant" };
+    active.itemTargets.set(itemId, target);
+    active.currentAgentMessageTarget = target;
   }
 
   private async handleItemCompleted(sessionId: string, active: ActiveTurn, message: AppServerMessage): Promise<void> {
-    const itemId = extractItemIdFromAppServerMessage(message);
-    const target = itemId ? active.itemTargets.get(itemId) : null;
+    const itemId = extractItemIdFromAppServerMessage(message) ?? active.currentAgentMessageItemId;
+    const target = itemId ? active.itemTargets.get(itemId) : active.currentAgentMessageTarget;
     const finalText = extractFinalAgentTextFromCodexEvent(message);
+    if (itemId && active.currentAgentMessageItemId === itemId) {
+      active.currentAgentMessageItemId = null;
+      active.currentAgentMessageTarget = null;
+    }
     if (target?.target === "activity") {
       if (finalText) {
         await this.messageStore.setActivityContent(sessionId, active.assistantMessageId, target.activityId, finalText);

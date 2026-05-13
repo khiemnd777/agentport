@@ -217,6 +217,14 @@ describe("codex chat service streaming", () => {
       }
     });
     await serviceInternals.handleAppServerNotification(session.id, assistantMessage.id, {
+      method: "item/agentMessage/delta",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        delta: " Tôi đang kiểm tra `rg`."
+      }
+    });
+    await serviceInternals.handleAppServerNotification(session.id, assistantMessage.id, {
       method: "item/started",
       params: {
         threadId: "thread-1",
@@ -234,13 +242,14 @@ describe("codex chat service streaming", () => {
       params: {
         threadId: "thread-1",
         turnId: "turn-1",
-        itemId: "answer-item",
         delta: "Tôi dùng quy chuẩn `DESIGN.md`."
       }
     });
 
     const [stored] = await messageStore.list(session.id);
-    expect(stored.activities[0].content).toBe("Tôi sẽ làm ở chế độ mockup/phân tích thôi.");
+    expect(stored.activities[0].content).toBe(
+      "Tôi sẽ làm ở chế độ mockup/phân tích thôi. Tôi đang kiểm tra `rg`."
+    );
     expect(stored.content).toBe("Tôi dùng quy chuẩn `DESIGN.md`.");
   });
 
