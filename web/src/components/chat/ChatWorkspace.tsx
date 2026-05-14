@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import type {
   ChatAttachment,
+  ChatActivity,
   ChatMessage,
   CodexPermissionMode,
   CodexReasoningEffort,
@@ -60,6 +61,7 @@ interface Props {
   onStopTurn: () => Promise<void>;
   onCreateSession: () => void;
   onOpenConsole: () => void;
+  onOpenChanges: () => void;
 }
 
 type ComposerAttachmentStatus = "pending" | "uploading" | "uploaded" | "error";
@@ -92,7 +94,8 @@ export default function ChatWorkspace({
   onSubmitUserInput,
   onStopTurn,
   onCreateSession,
-  onOpenConsole
+  onOpenConsole,
+  onOpenChanges
 }: Props) {
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -416,6 +419,7 @@ export default function ChatWorkspace({
           <div className="chat-thread">
             {sortedMessages.map((message) => {
               const visibleAssistantContent = message.role === "assistant" ? getVisibleAssistantContent(message) : "";
+              const fileChangeActivities = message.role === "assistant" ? getFileChangeActivities(message) : [];
               return (
                 <article className={`chat-message ${message.role === "user" ? "user" : "assistant"}`} key={message.id}>
                   {message.role === "assistant" ? (
@@ -436,6 +440,11 @@ export default function ChatWorkspace({
                       ) : message.activities.length === 0 && message.status === "streaming" ? (
                         <p className="thinking-placeholder">Thinking...</p>
                       ) : null}
+                      <AssistantFileChanges
+                        activities={fileChangeActivities}
+                        onFileLinkClick={handleOpenFileLink}
+                        onOpenChanges={onOpenChanges}
+                      />
                       {message.error ? <p className="error-text">{message.error}</p> : null}
                     </div>
                   ) : (
@@ -959,7 +968,8 @@ function AssistantActivityGroup({
   onFileLinkClick: (link: MarkdownFileLink) => void;
   onToggle: () => void;
 }) {
-  if (message.activities.length === 0) {
+  const activities = message.activities.filter((activity) => !isFileChangeActivity(activity));
+  if (activities.length === 0) {
     return null;
   }
   const working = message.status === "streaming";
@@ -971,7 +981,7 @@ function AssistantActivityGroup({
       </button>
       {!collapsed ? (
         <div className="assistant-activity-body">
-          {message.activities.map((activity) => (
+          {activities.map((activity) => (
             <div className="assistant-activity-section" key={activity.id}>
               <div className="assistant-activity-title">{activity.title}</div>
               {activity.content ? (
@@ -983,6 +993,74 @@ function AssistantActivityGroup({
           ))}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+interface FileChangeRow {
+  path: string;
+  name: string;
+  dir: string;
+  additions?: number;
+  deletions?: number;
+}
+
+function AssistantFileChanges({
+  activities,
+  onFileLinkClick,
+  onOpenChanges
+}: {
+  activities: ChatActivity[];
+  onFileLinkClick: (link: MarkdownFileLink) => void;
+  onOpenChanges: () => void;
+}) {
+  const rows = parseFileChangeRows(activities);
+  if (rows.length === 0) {
+    return null;
+  }
+  const totals = rows.reduce(
+    (sum, row) => ({
+      additions: sum.additions + (row.additions ?? 0),
+      deletions: sum.deletions + (row.deletions ?? 0),
+      hasStats: sum.hasStats || typeof row.additions === "number" || typeof row.deletions === "number"
+    }),
+    { additions: 0, deletions: 0, hasStats: false }
+  );
+
+  return (
+    <div className="markdown-diff-summary assistant-file-changes" aria-label="File changes">
+      <div className="changed-file-row summary markdown-diff-summary-header assistant-file-changes-header">
+        <span className="changed-file-main">
+          <span className="changed-file-name">File Changes</span>
+          <span className="changed-file-dir">
+            {rows.length} {rows.length === 1 ? "file" : "files"} changed
+          </span>
+        </span>
+        <ChangeStats
+          additions={totals.hasStats ? totals.additions : undefined}
+          deletions={totals.hasStats ? totals.deletions : undefined}
+        />
+        <button className="assistant-file-changes-review" type="button" onClick={onOpenChanges}>
+          Review
+        </button>
+      </div>
+      <div className="markdown-diff-summary-list">
+        {rows.map((row) => (
+          <button
+            className="changed-file-row markdown-diff-summary-row"
+            type="button"
+            key={row.path}
+            onClick={() => onFileLinkClick({ label: row.path, target: row.path })}
+          >
+            <span className="file-status modified">M</span>
+            <span className="changed-file-main">
+              <span className="changed-file-name">{row.name}</span>
+              <span className="changed-file-dir">{row.dir || "./"}</span>
+            </span>
+            <ChangeStats additions={row.additions} deletions={row.deletions} />
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1235,6 +1313,71 @@ function getVisibleAssistantContent(message: ChatMessage): string {
     return "";
   }
   return message.content;
+}
+
+function getFileChangeActivities(message: ChatMessage): ChatActivity[] {
+  return message.activities.filter(isFileChangeActivity);
+}
+
+function isFileChangeActivity(activity: ChatActivity): boolean {
+  return activity.title.trim().toLowerCase() === "file changes";
+}
+
+function parseFileChangeRows(activities: ChatActivity[]): FileChangeRow[] {
+  const rows = activities.flatMap((activity) =>
+    activity.content
+      .split("\n")
+      .map(parseFileChangeRow)
+      .filter((row): row is FileChangeRow => Boolean(row))
+  );
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    if (seen.has(row.path)) {
+      return false;
+    }
+    seen.add(row.path);
+    return true;
+  });
+}
+
+function parseFileChangeRow(line: string): FileChangeRow | null {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed === "File changes recorded.") {
+    return null;
+  }
+  const stats = trimmed.match(/^(.+?)\s+\+(\d+)\s+[−-](\d+)\s*$/);
+  const path = stats ? stats[1].trim() : trimmed;
+  const pathParts = splitPath(path);
+  return {
+    path,
+    name: pathParts.name,
+    dir: pathParts.dir,
+    additions: stats ? Number(stats[2]) : undefined,
+    deletions: stats ? Number(stats[3]) : undefined
+  };
+}
+
+function splitPath(filePath: string): { dir: string; name: string } {
+  const parts = filePath.split("/");
+  const name = parts.pop() || filePath;
+  return {
+    dir: parts.join("/"),
+    name
+  };
+}
+
+function ChangeStats({ additions, deletions }: { additions?: number; deletions?: number }) {
+  const hasAdditions = typeof additions === "number";
+  const hasDeletions = typeof deletions === "number";
+  if (!hasAdditions && !hasDeletions) {
+    return <span className="change-stats empty" aria-hidden="true" />;
+  }
+  return (
+    <span className="change-stats">
+      {hasAdditions ? <span className="change-stat additions">+{additions}</span> : null}
+      {hasDeletions ? <span className="change-stat deletions">-{deletions}</span> : null}
+    </span>
+  );
 }
 
 function activityContentContainsLeakedPrefix(activityContent: string, content: string): boolean {

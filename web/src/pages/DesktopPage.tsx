@@ -920,6 +920,10 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
         setInspectorTab("console");
         setMobileTab("console");
       }}
+      onOpenChanges={() => {
+        setInspectorTab("changes");
+        setMobileTab("changes");
+      }}
     />
   );
   const inspectorPanel = (
