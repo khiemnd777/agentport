@@ -5,7 +5,11 @@ export function adminRoutes(serverControlService: ServerControlService): Hono {
   const app = new Hono();
 
   app.post("/restart", (c) => {
-    return c.json(serverControlService.requestRestart());
+    const result = serverControlService.requestRestart();
+    if (!result.ok) {
+      return c.json({ error: result.error }, 409);
+    }
+    return c.json(result);
   });
 
   return app;

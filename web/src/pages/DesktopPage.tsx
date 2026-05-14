@@ -84,6 +84,7 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
   const [defaultRepoKey, setDefaultRepoKey] = useState("");
   const [repoDiscovery, setRepoDiscovery] = useState<RepoDiscoveryStatus | null>(null);
   const [repoSettingsOpen, setRepoSettingsOpen] = useState(false);
+  const isMobileLayout = useMediaQuery("(max-width: 940px)");
 
   const selectedRepo = useMemo(
     () => repos.find((repo) => repo.key === selectedRepoKey) ?? null,
@@ -535,7 +536,11 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
 
   const chatTurnBusy = ["CREATED", "RUNNING", "WAITING_FOR_USER"].includes(activeSession?.task_status ?? "IDLE");
 
-  const consolePanel = <CodexTerminal sessionId={activeSessionId} onStatus={handleTerminalStatus} />;
+  const consoleVisible =
+    (isMobileLayout && mobileTab === "console") || (!isMobileLayout && inspectorTab === "console");
+  const consolePanel = (
+    <CodexTerminal sessionId={activeSessionId} isVisible={consoleVisible} onStatus={handleTerminalStatus} />
+  );
   const changesPanel = (
     <GitStatusPanel
       sessionId={activeSessionId}
@@ -585,7 +590,7 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
   const inspectorPanel = (
     <InspectorPanel
       activeTab={inspectorTab}
-      consolePanel={consolePanel}
+      consolePanel={isMobileLayout ? null : consolePanel}
       changesPanel={changesPanel}
       onTabChange={setInspectorTab}
     />
@@ -628,7 +633,7 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
           />
         }
         chat={chatPanel}
-        console={consolePanel}
+        console={isMobileLayout ? consolePanel : null}
         changes={changesPanel}
         inspector={inspectorPanel}
         mobileTab={mobileTab}
@@ -667,6 +672,20 @@ function appendMessageDelta(current: ChatMessage[], messageId: string, delta: st
       ? { ...message, content: `${message.content}${delta}`, status: "streaming", updated_at: now }
       : message
   );
+}
+
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(query);
+    const handleChange = () => setMatches(mediaQuery.matches);
+    handleChange();
+    mediaQuery.addEventListener("change", handleChange);
+    return () => mediaQuery.removeEventListener("change", handleChange);
+  }, [query]);
+
+  return matches;
 }
 
 function upsertSessions(current: CodexSession[], incoming: CodexSession[]): CodexSession[] {

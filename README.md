@@ -96,6 +96,14 @@ Open:
 http://127.0.0.1:8787
 ```
 
+Stop the managed server:
+
+```sh
+bun run stop
+```
+
+`bun run dev` is for local development with watch mode and the Vite dev server. `bun run start` and `bun run stop` are the managed runtime path used for production-style local serving. The in-app `Restart server` action is only available in this managed runtime mode and follows the same restart path as `bun run start`.
+
 Useful validation commands:
 
 ```sh

@@ -1,6 +1,6 @@
 import { access } from "node:fs/promises";
 import { describe, expect, test } from "bun:test";
-import { buildExpectBridgeScript } from "../src/pty/expectBridge";
+import { buildExpectBridgeScript, buildExpectResizeMarker } from "../src/pty/expectBridge";
 import { createPtyEnv } from "../src/pty/ptyEnv";
 import { wrapPromptForRemoteCodex } from "../src/services/codexPromptWrapper";
 
@@ -41,6 +41,13 @@ describe("remote prompt encoding", () => {
     expect(output).toContain(vietnamesePrompt);
     expect(output).not.toContain("Báº");
     expect(output).not.toContain("dÃ");
+  });
+
+  test("expect fallback script initializes and accepts terminal size changes", () => {
+    const script = buildExpectBridgeScript(["/bin/cat"], 132, 35);
+    expect(script).toContain("stty columns 132 rows 35");
+    expect(script).toContain("AgentPortResize");
+    expect(buildExpectResizeMarker(160, 48)).toBe("\u001b]1337;AgentPortResize=160;48\u0007");
   });
 });
 

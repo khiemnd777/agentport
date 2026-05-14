@@ -1,4 +1,5 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Hono } from "hono";
 import { loadConfig } from "./config";
 import { AuthService } from "./auth/authService";
@@ -89,10 +90,23 @@ setInterval(() => {
 
 const app = new Hono();
 let serverRef: Bun.Server<RemoteSocketData> | null = null;
-const serverControlService = new ServerControlService(() => {
-  serverRef?.stop(true);
-  process.exit(0);
-});
+const serverRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+const serverControlService = new ServerControlService(
+  () => {
+    const restartProcess = Bun.spawn([process.execPath, "run", "scripts/start-background.ts"], {
+      cwd: serverRoot,
+      detached: true,
+      env: { ...process.env, RCD_RUN_MODE: "managed" },
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore"
+    });
+    restartProcess.unref();
+    serverRef?.stop(true);
+    process.exit(0);
+  },
+  () => process.env.RCD_RUN_MODE === "managed"
+);
 app.onError((error, c) => {
   if (error instanceof AppError) {
     return c.json({ error: error.message }, error.status as never);

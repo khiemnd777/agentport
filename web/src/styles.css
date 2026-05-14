@@ -1142,8 +1142,27 @@ textarea:disabled {
   background: var(--color-terminal-bg);
 }
 
+.terminal-xterm {
+  height: 100%;
+  min-height: 0;
+}
+
+.terminal-xterm.hidden {
+  display: none;
+}
+
 .terminal-container .xterm {
   height: 100%;
+}
+
+.terminal-notice {
+  height: 100%;
+  overflow: auto;
+  padding: 12px;
+  color: var(--color-terminal-text);
+  font: 13px/1.5 Menlo, Monaco, "SFMono-Regular", Consolas, monospace;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .chat-workspace {
@@ -2487,6 +2506,18 @@ textarea:disabled {
   padding-right: 2px;
 }
 
+.changed-file-entry {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  padding: 0 6px 0 0;
+}
+
 .changed-file-row {
   width: 100%;
   min-width: 0;
@@ -2503,6 +2534,12 @@ textarea:disabled {
   text-align: left;
 }
 
+.changed-file-entry .changed-file-row {
+  border: 0;
+  background: transparent;
+  padding-right: 4px;
+}
+
 .changed-file-row.summary {
   grid-template-columns: minmax(0, 1fr) auto;
   min-height: 50px;
@@ -2510,13 +2547,34 @@ textarea:disabled {
   background: var(--color-bg-panel);
 }
 
+.changed-file-entry:hover,
 .changed-file-row:not(.summary):hover {
   background: var(--color-bg-panel);
 }
 
+.changed-file-entry.active,
 .changed-file-row.active {
   border-color: var(--color-primary-border);
   background: var(--color-primary-softer);
+}
+
+.changed-file-open-button {
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+  background: var(--color-bg-surface);
+  color: var(--color-text-soft);
+  padding: 0;
+}
+
+.changed-file-open-button:hover {
+  border-color: var(--color-primary-border);
+  color: var(--color-primary-strong);
 }
 
 .file-status {
@@ -2608,13 +2666,113 @@ textarea:disabled {
   max-height: 360px;
   margin: 0;
   overflow: auto;
-  padding: 10px;
+  padding: 0;
+  border: 1px solid var(--color-terminal-border);
   border-radius: 8px;
   background: var(--color-code-bg);
   color: var(--color-code-text);
   font: 12px/1.5 Menlo, Monaco, "SFMono-Regular", Consolas, monospace;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+}
+
+.diff-viewer.empty {
+  display: grid;
+  place-items: start;
+  padding: 12px;
+  color: var(--color-muted);
+}
+
+.diff-lines {
+  width: max-content;
+  min-width: 100%;
+  display: grid;
+  padding: 8px 0;
+}
+
+.diff-line {
+  min-width: 100%;
+  width: max-content;
+  display: grid;
+  grid-template-columns: 42px 42px 22px max-content;
+  align-items: stretch;
+  color: var(--color-code-text);
+  white-space: pre;
+}
+
+.diff-line-number,
+.diff-line-marker {
+  user-select: none;
+}
+
+.diff-line-number {
+  min-width: 0;
+  padding: 0 7px;
+  border-right: 1px solid var(--color-terminal-border);
+  color: var(--color-accent-muted);
+  text-align: right;
+}
+
+.diff-line-marker {
+  display: grid;
+  place-items: center;
+  color: var(--color-muted);
+}
+
+.diff-line-code {
+  min-width: 0;
+  padding: 0 14px 0 2px;
+  color: inherit;
+  font: inherit;
+}
+
+.diff-line-file {
+  margin-top: 6px;
+  border-top: 1px solid var(--color-terminal-border);
+  border-bottom: 1px solid var(--color-terminal-border);
+  background: var(--color-terminal-toolbar);
+  color: var(--color-terminal-text);
+  font-weight: 750;
+}
+
+.diff-line-file:first-child {
+  margin-top: 0;
+}
+
+.diff-line-file .diff-line-code {
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+.diff-line-meta,
+.diff-line-path {
+  color: var(--color-accent-muted);
+}
+
+.diff-line-hunk {
+  border-top: 1px solid var(--color-terminal-border);
+  border-bottom: 1px solid var(--color-terminal-border);
+  background: var(--color-info-bg);
+  color: var(--color-info);
+  font-weight: 750;
+}
+
+.diff-line-addition {
+  background: var(--color-primary-soft);
+  color: var(--color-primary-strong);
+}
+
+.diff-line-addition .diff-line-marker,
+.diff-line-addition .diff-line-number {
+  color: var(--color-primary-strong);
+}
+
+.diff-line-deletion {
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+}
+
+.diff-line-deletion .diff-line-marker,
+.diff-line-deletion .diff-line-number {
+  color: var(--color-danger);
 }
 
 .empty-state {

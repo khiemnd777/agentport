@@ -41,6 +41,14 @@ Open:
 http://127.0.0.1:8787
 ```
 
+Stop the managed server:
+
+```sh
+bun run stop
+```
+
+Use this mode for the in-app `Restart server` action. Development mode (`bun run dev`) keeps server watch mode and Vite separate, so the UI restart action intentionally returns an error there instead of taking over the dev process.
+
 ## Validation
 
 ```sh

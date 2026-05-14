@@ -1,5 +1,5 @@
 import * as pty from "node-pty";
-import { buildExpectBridgeScript } from "./expectBridge";
+import { buildExpectBridgeScript, buildExpectResizeMarker } from "./expectBridge";
 import { createPtyEnv } from "./ptyEnv";
 
 export interface CodexPtySessionOptions {
@@ -15,6 +15,8 @@ export class CodexPtySession {
   private nodePtyProcess: pty.IPty | null = null;
   private fallbackProcess: Bun.Subprocess<"pipe", "pipe", "pipe"> | null = null;
   private fallbackStdin: Bun.FileSink | null = null;
+  private cols = 120;
+  private rows = 40;
 
   constructor(private readonly options: CodexPtySessionOptions) {}
 
@@ -25,8 +27,8 @@ export class CodexPtySession {
     try {
       this.nodePtyProcess = pty.spawn(this.options.command, this.options.args, {
         name: "xterm-256color",
-        cols: 120,
-        rows: 40,
+        cols: this.cols,
+        rows: this.rows,
         cwd: this.options.cwd,
         env: createPtyEnv()
       });
@@ -51,10 +53,16 @@ export class CodexPtySession {
   }
 
   resize(cols: number, rows: number): void {
-    if (!this.nodePtyProcess) {
+    this.cols = Math.max(20, Math.floor(cols));
+    this.rows = Math.max(5, Math.floor(rows));
+    if (this.nodePtyProcess) {
+      this.nodePtyProcess.resize(this.cols, this.rows);
       return;
     }
-    this.nodePtyProcess.resize(Math.max(20, cols), Math.max(5, rows));
+    if (this.fallbackStdin) {
+      this.fallbackStdin.write(buildExpectResizeMarker(this.cols, this.rows));
+      void this.fallbackStdin.flush();
+    }
   }
 
   close(): void {
@@ -67,7 +75,7 @@ export class CodexPtySession {
   }
 
   private startExpectFallback(): void {
-    this.fallbackProcess = Bun.spawn(["/usr/bin/expect", "-c", buildExpectBridgeScript([this.options.command, ...this.options.args])], {
+    this.fallbackProcess = Bun.spawn(["/usr/bin/expect", "-c", buildExpectBridgeScript([this.options.command, ...this.options.args], this.cols, this.rows)], {
       cwd: this.options.cwd,
       env: createPtyEnv(),
       stdin: "pipe",

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ListChecks } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -7,6 +7,7 @@ import { apiFetch, terminalSocketUrl, type TaskStatus, type TerminalStatus } fro
 
 interface Props {
   sessionId: string | null;
+  isVisible?: boolean;
   onStatus: (status: { terminalStatus: TerminalStatus; taskStatus: TaskStatus }) => void;
 }
 
@@ -31,13 +32,52 @@ const terminalTheme = {
 };
 const reconnectDelaysMs = [1000, 2000, 5000, 10000];
 
-export default function CodexTerminal({ sessionId, onStatus }: Props) {
+export default function CodexTerminal({ sessionId, isVisible = true, onStatus }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const sessionIdRef = useRef<string | null>(sessionId);
   const canSendInputRef = useRef(false);
   const [connectionState, setConnectionState] = useState<ConnectionState>("DISCONNECTED");
   const [terminalWritable, setTerminalWritable] = useState(false);
+  const [terminalNotice, setTerminalNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  const fitAndResize = useCallback(() => {
+    const container = containerRef.current;
+    const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!container || !terminal || !fitAddon || container.offsetWidth === 0 || container.offsetHeight === 0) {
+      return false;
+    }
+
+    fitAddon.fit();
+    const socket = socketRef.current;
+    const currentSessionId = sessionIdRef.current;
+    if (socket?.readyState === WebSocket.OPEN && currentSessionId) {
+      socket.send(
+        JSON.stringify({
+          type: "resize",
+          sessionId: currentSessionId,
+          cols: terminal.cols,
+          rows: terminal.rows
+        })
+      );
+    }
+    return true;
+  }, []);
+
+  const scheduleFit = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      if (!fitAndResize()) {
+        window.setTimeout(fitAndResize, 50);
+      }
+    });
+  }, [fitAndResize]);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -52,34 +92,28 @@ export default function CodexTerminal({ sessionId, onStatus }: Props) {
       theme: terminalTheme
     });
     const fitAddon = new FitAddon();
+    fitAddonRef.current = fitAddon;
     terminal.loadAddon(fitAddon);
     terminal.open(containerRef.current);
     terminalRef.current = terminal;
 
-    const fit = () => {
-      fitAddon.fit();
-      const socket = socketRef.current;
-      if (socket?.readyState === WebSocket.OPEN && sessionId) {
-        socket.send(
-          JSON.stringify({
-            type: "resize",
-            sessionId,
-            cols: terminal.cols,
-            rows: terminal.rows
-          })
-        );
-      }
-    };
-    fit();
-    const resizeObserver = new ResizeObserver(fit);
+    scheduleFit();
+    const resizeObserver = new ResizeObserver(scheduleFit);
     resizeObserver.observe(containerRef.current);
 
     return () => {
       resizeObserver.disconnect();
       terminal.dispose();
       terminalRef.current = null;
+      fitAddonRef.current = null;
     };
-  }, []);
+  }, [scheduleFit]);
+
+  useEffect(() => {
+    if (isVisible) {
+      scheduleFit();
+    }
+  }, [isVisible, scheduleFit]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -88,13 +122,14 @@ export default function CodexTerminal({ sessionId, onStatus }: Props) {
     }
     socketRef.current?.close();
     terminal.clear();
+    setTerminalNotice(null);
 
     if (!sessionId) {
       setConnectionState("DISCONNECTED");
       canSendInputRef.current = false;
       setTerminalWritable(false);
       terminal.options.disableStdin = true;
-      terminal.writeln("Create or select a session to connect.");
+      setTerminalNotice("Create or select a session to connect.");
       return;
     }
 
@@ -163,14 +198,7 @@ export default function CodexTerminal({ sessionId, onStatus }: Props) {
         reconnectAttempt = 0;
         setConnectionState("CONNECTED");
         terminal.focus();
-        socket.send(
-          JSON.stringify({
-            type: "resize",
-            sessionId,
-            cols: terminal.cols,
-            rows: terminal.rows
-          })
-        );
+        scheduleFit();
       });
 
       socket.addEventListener("message", (event) => {
@@ -181,10 +209,14 @@ export default function CodexTerminal({ sessionId, onStatus }: Props) {
           return;
         }
         if (message.type === "output" && typeof message.data === "string") {
+          setTerminalNotice(null);
           if (message.replay === true) {
-            terminal.clear();
+            terminal.reset();
           }
           terminal.write(message.data);
+          if (message.replay === true) {
+            terminal.scrollToBottom();
+          }
           return;
         }
         if (message.type === "status") {
@@ -211,6 +243,11 @@ export default function CodexTerminal({ sessionId, onStatus }: Props) {
           return;
         }
         if (message.type === "error" && typeof message.message === "string") {
+          if (message.code === "PTY_UNAVAILABLE") {
+            terminal.clear();
+            setTerminalNotice(message.message);
+            return;
+          }
           terminal.writeln("");
           terminal.writeln(`[Agent Port] ${message.message}`);
         }
@@ -290,7 +327,10 @@ export default function CodexTerminal({ sessionId, onStatus }: Props) {
         </div>
         <span className={`connection-dot ${connectionState.toLowerCase()}`}>{connectionState}</span>
       </div>
-      <div ref={containerRef} className="terminal-container" />
+      <div className="terminal-container">
+        {terminalNotice ? <div className="terminal-notice">{terminalNotice}</div> : null}
+        <div ref={containerRef} className={terminalNotice ? "terminal-xterm hidden" : "terminal-xterm"} />
+      </div>
     </div>
   );
 }

@@ -8,6 +8,7 @@
     "dev:server": "bun run --cwd server dev",
     "dev:web": "bun run --cwd web dev",
     "start": "bun run --cwd server start",
+    "stop": "bun run --cwd server stop",
     "build": "bun run --cwd server build && bun run --cwd web build",
     "typecheck": "bun run --cwd server typecheck && bun run --cwd web typecheck",
     "test": "bun run --cwd server test && bun run --cwd web test",

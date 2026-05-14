@@ -73,11 +73,6 @@ export class PtySessionManager {
     }
     this.clients.get(sessionId)?.add(ws);
 
-    const replay = await this.logStore.readTail(sessionId, TERMINAL_REPLAY_BYTES);
-    if (replay) {
-      ws.send(JSON.stringify({ type: "output", sessionId, data: replay, replay: true }));
-    }
-
     const hasActivePty = this.ptySessions.has(sessionId);
     if (!hasActivePty && ["CONNECTING", "CONNECTED", "RUNNING"].includes(session.terminal_status)) {
       await this.sessionService.updateTerminalStatus(sessionId, "DISCONNECTED");
@@ -99,7 +94,12 @@ export class PtySessionManager {
       })
     );
 
-    if (!hasActivePty) {
+    if (hasActivePty) {
+      const replay = await this.logStore.readTail(sessionId, TERMINAL_REPLAY_BYTES);
+      if (replay) {
+        ws.send(JSON.stringify({ type: "output", sessionId, data: replay, replay: true }));
+      }
+    } else {
       ws.send(
         JSON.stringify({
           type: "error",
@@ -107,8 +107,8 @@ export class PtySessionManager {
           code: "PTY_UNAVAILABLE",
           message:
             session.terminal_status === "DISCONNECTED"
-              ? "This session is not attached to a live Codex process. Create a new session to start a fresh PTY."
-              : "This session is closed. The terminal is showing persisted output only."
+              ? "This session is not attached to a live Codex process. Raw Codex TUI history is not replayed here because it cannot be rendered reliably after the PTY has stopped. Create a new session to start a fresh console."
+              : "This session is closed. Raw Codex TUI history is not replayed here because it cannot be rendered reliably after the PTY has stopped."
         })
       );
     }

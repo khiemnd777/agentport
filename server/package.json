@@ -6,6 +6,7 @@
     "dev": "bun --env-file=../.env --watch src/index.ts",
     "build": "bun build src/index.ts --target=bun --external node-pty --outdir=dist",
     "start": "bun run scripts/start-background.ts",
+    "stop": "bun run scripts/stop-background.ts",
     "start:foreground": "bun --env-file=../.env dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "bun test"

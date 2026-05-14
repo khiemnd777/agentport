@@ -1,12 +1,14 @@
+import { FileText } from "lucide-react";
 import type { GitChangedFile } from "../../api/client";
 
 interface Props {
   files: GitChangedFile[];
   selectedFile: string | null;
   onSelect: (file: string | null) => void;
+  onOpenFile: (file: string) => void;
 }
 
-export default function ChangedFilesList({ files, selectedFile, onSelect }: Props) {
+export default function ChangedFilesList({ files, selectedFile, onSelect, onOpenFile }: Props) {
   if (files.length === 0) {
     return <div className="empty-state">No working tree changes.</div>;
   }
@@ -26,23 +28,35 @@ export default function ChangedFilesList({ files, selectedFile, onSelect }: Prop
         {files.map((file) => {
           const pathParts = splitPath(file.path);
           const status = getFileStatus(file);
+          const directoryLabel = pathParts.dir || "./";
+          const pathLabel = file.originalPath ? `${file.originalPath} -> ${directoryLabel}` : directoryLabel;
           return (
-            <button
-              type="button"
+            <div
               key={`${file.indexStatus}${file.worktreeStatus}${file.path}`}
-              className={`changed-file-row ${selectedFile === file.path ? "active" : ""}`}
-              onClick={() => onSelect(file.path)}
+              className={`changed-file-entry ${selectedFile === file.path ? "active" : ""}`}
             >
-              <span className={`file-status ${status.kind}`}>{status.label}</span>
-              <span className="changed-file-main">
-                <span className="changed-file-name">{pathParts.name}</span>
-                <span className="changed-file-dir">
-                  {file.originalPath ? `${file.originalPath} -> ` : null}
-                  {pathParts.dir || "./"}
+              <button
+                type="button"
+                className="changed-file-row changed-file-select"
+                onClick={() => onSelect(file.path)}
+              >
+                <span className={`file-status ${status.kind}`}>{status.label}</span>
+                <span className="changed-file-main">
+                  <span className="changed-file-name" title={pathParts.name}>{pathParts.name}</span>
+                  <span className="changed-file-dir" title={pathLabel}>{pathLabel}</span>
                 </span>
-              </span>
-              <ChangeStats additions={file.additions} deletions={file.deletions} />
-            </button>
+                <ChangeStats additions={file.additions} deletions={file.deletions} />
+              </button>
+              <button
+                type="button"
+                className="changed-file-open-button"
+                onClick={() => onOpenFile(file.path)}
+                title={`Open ${file.path}`}
+                aria-label={`Open ${file.path}`}
+              >
+                <FileText size={14} />
+              </button>
+            </div>
           );
         })}
       </div>

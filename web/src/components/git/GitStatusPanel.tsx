@@ -27,10 +27,13 @@ export default function GitStatusPanel({
 }: Props) {
   const [filePreview, setFilePreview] = useState<FilePreviewState | null>(null);
 
-  async function handleSelectFile(file: string | null) {
+  function handleSelectFile(file: string | null) {
+    setFilePreview(null);
     onSelectFile(file);
-    if (!file || !sessionId) {
-      setFilePreview(null);
+  }
+
+  async function handleOpenFile(file: string) {
+    if (!sessionId) {
       return;
     }
     const label = basenameFromPath(file);
@@ -58,7 +61,12 @@ export default function GitStatusPanel({
           <RefreshCw size={16} className={refreshing ? "spin" : ""} />
         </button>
       </div>
-      <ChangedFilesList files={status?.files ?? []} selectedFile={selectedFile} onSelect={handleSelectFile} />
+      <ChangedFilesList
+        files={status?.files ?? []}
+        selectedFile={selectedFile}
+        onSelect={handleSelectFile}
+        onOpenFile={handleOpenFile}
+      />
       {status && !status.isRepository ? <div className="warning-banner">{status.error}</div> : null}
       {filePreview ? <FilePreviewPanel preview={filePreview} onClose={() => setFilePreview(null)} /> : null}
       <DiffViewer diff={diff} />
