@@ -4,7 +4,9 @@
 
 Agent Port is a private, self-hosted browser UI for controlling local Codex CLI sessions on a MacBook through Tailscale. It is production-like local software, not a throwaway task runner.
 
-The browser terminal controls a separate local Codex CLI process spawned in a selected whitelisted repo. It does not share conversation context or active skills with the Codex Desktop app thread.
+The chat workspace syncs through the local Codex thread store via Codex app-server. Codex Desktop and Agent Port can continue the same synced thread when it is idle.
+
+The browser terminal controls a separate local Codex CLI process spawned in a selected whitelisted repo. It does not share active skills with the Codex Desktop app thread and should be treated as an escape hatch, not the chat source of truth.
 
 ## Hard Rules
 
@@ -25,10 +27,11 @@ The browser terminal controls a separate local Codex CLI process spawned in a se
 ## Architecture
 
 - Root app: Bun workspace with `server/` and `web/`.
-- Backend: Bun, TypeScript, Hono, Bun WebSocket, PTY session manager, file storage.
+- Backend: Bun, TypeScript, Hono, Bun WebSocket, Codex app-server sync, PTY session manager, file storage.
 - Frontend: React, Vite, TypeScript, xterm.js.
 - Storage: JSON/JSONL files under `data/`.
-- Codex backend: local Codex CLI process spawned via PTY in the selected repo.
+- Codex chat backend: long-lived `codex app-server` connection, preferring the running Codex Desktop app-server proxy and falling back to standalone stdio app-server.
+- Codex terminal backend: local Codex CLI process spawned via PTY in the selected repo.
 - PTY strategy: try `node-pty` first; fall back to macOS `/usr/bin/expect` bridge when Bun/node-pty spawn fails.
 
 ## Commands
@@ -51,10 +54,10 @@ Default dev ports:
 ## Config And Runtime
 
 - `.env` contains host, ports, config path, and `APP_PASSWORD`.
-- `config.json` contains the repo whitelist and local Codex command.
+- `config.json` contains the repo whitelist, repo discovery settings, local Codex command, model/reasoning defaults, permission modes, and retention settings.
 - `config.json` is local and ignored by git.
-- Current expected repo key is `noah`.
-- Current repo path is `/Users/khiemnguyen/Works/project_noah/noah`.
+- Repo keys and paths come from `config.json`; do not hardcode raw repo paths into browser-facing flows.
+- Local development often uses `noah` as the default repo key, but additional repos may be configured.
 
 ## Session Lifecycle
 
@@ -75,6 +78,7 @@ Default dev ports:
   - `[USER_INPUT_REQUIRED]`
   - `[TASK_COMPLETED]`
   - `[TASK_BLOCKED]`
+- Synced app-server chat turns use Codex app-server user-input requests instead of legacy PTY markers. Agent Port only answers requests for turns it started.
 
 ## Security
 
@@ -84,13 +88,15 @@ Default dev ports:
 - Validate repo keys, branch names, session ids, task ids, and git diff file paths.
 - Git APIs are read-only.
 - Do not add commit, push, or destructive git operations without an explicit product decision.
+- Codex Desktop-owned active turns are observe-only from Agent Port; do not answer approvals, user-input requests, or interrupts for Desktop-owned turns.
 
 ## UI Product Notes
 
 - Follow `DESIGN.md` for UI consistency before proposing mockups or code changes.
 - For every UI change, start with a text mockup and get confirmation before writing code.
 - The terminal is a live Codex CLI console, not a general-purpose shell.
-- The Task composer is the preferred managed workflow surface.
+- The chat composer is the preferred synced workflow surface.
+- The legacy Task composer is for PTY-managed task flows and explicit marker-based lifecycle handling.
 - The terminal is an escape hatch for direct Codex CLI interaction.
 - Make session identity and context boundaries explicit in UI copy.
-- The Agent Port CLI session is independent from the Codex Desktop app conversation.
+- The Agent Port terminal CLI session is independent from the synced Codex Desktop chat thread.

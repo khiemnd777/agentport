@@ -2,7 +2,7 @@
 
 Agent Port is a self-hosted browser UI for running local Codex CLI sessions on a MacBook from another device over a private Tailscale network.
 
-It exists for the at-home MacBook workflow: keep repositories and Codex running locally, then connect from iPhone, iPad, or another laptop through Tailscale to create sessions, submit tasks, watch live output, answer follow-up questions, and inspect read-only git changes.
+It exists for the at-home MacBook workflow: keep repositories and Codex running locally, then connect from iPhone, iPad, or another laptop through Tailscale to create synced Codex chat sessions, use the terminal escape hatch when needed, answer follow-up questions, and inspect read-only git changes.
 
 ## Architecture
 
@@ -12,10 +12,9 @@ iPhone / iPad / Laptop
   -> MacBook 127.0.0.1:8787
   -> Agent Port web app
   -> Hono API + Bun WebSocket server
-  -> long-lived Codex app-server for synced chat threads
-  -> PTY Session Manager
-  -> local Codex CLI process
   -> whitelisted local repositories
+     -> long-lived Codex app-server for synced chat threads
+     -> PTY Session Manager -> local Codex CLI process for terminal console
 ```
 
 Core pieces:
@@ -51,13 +50,14 @@ RCD_SERVER_HOST=127.0.0.1
 RCD_SERVER_PORT=8787
 RCD_WEB_HOST=127.0.0.1
 RCD_WEB_PORT=5177
+RCD_WEB_ALLOWED_HOSTS=your-mac.tailnet-name.ts.net
 RCD_CONFIG_PATH=../config.json
 RCD_REPO_SEARCH_ROOTS=/Users/khiem/projects
 RCD_REPO_SEARCH_MAX_DEPTH=4
 APP_PASSWORD=choose-a-strong-local-password
 ```
 
-The Bun package scripts load `.env` automatically with `--env-file=../.env` for `server/` and `web/`. The backend also loads the app-root `.env` defensively at startup, so direct server launches still pick up `APP_PASSWORD`. Vite derives its HTTP and WebSocket proxy targets from `RCD_SERVER_HOST` and `RCD_SERVER_PORT`, so server location is configured in one place.
+The Bun package scripts load `.env` automatically with `--env-file=../.env` for `server/` and `web/`. The backend also loads the app-root `.env` defensively at startup, so direct server launches still pick up `APP_PASSWORD`. Vite derives its HTTP and WebSocket proxy targets from `RCD_SERVER_HOST` and `RCD_SERVER_PORT`, so server location is configured in one place. `RCD_WEB_ALLOWED_HOSTS` allows the Vite dev server to accept the HTTPS host Tailscale Serve presents on remote devices.
 
 Codex CLI must already be installed and available as `codex` on the MacBook. If your command is different, update `codex.command` in `config.json`. Chat sync uses `codex app-server` as the source of truth for Codex threads; Agent Port prefers the running Codex Desktop app-server proxy and falls back to a standalone stdio app-server when Desktop is unavailable.
 
