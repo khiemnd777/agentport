@@ -1692,6 +1692,7 @@ textarea:disabled {
 
 .assistant-activity-toggle {
   width: fit-content;
+  max-width: 100%;
   min-height: 30px;
   display: inline-flex;
   align-items: center;
@@ -1713,6 +1714,38 @@ textarea:disabled {
 
 .assistant-activity-toggle:hover {
   color: var(--color-text-soft);
+}
+
+.assistant-activity-summary {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.assistant-activity-summary > svg {
+  flex: 0 0 auto;
+  color: var(--color-muted);
+}
+
+.assistant-activity-summary-text {
+  min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.assistant-activity-summary-label,
+.assistant-activity-summary-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-activity-summary-meta {
+  color: var(--color-text-soft);
+  font-weight: 500;
 }
 
 .assistant-activity-body {

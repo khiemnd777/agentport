@@ -74,4 +74,51 @@ describe("codex thread projection", () => {
     });
     expect(messages[1].activities[0]?.status).toBe("streaming");
   });
+
+  test("projects command and file change activities with compact metadata", () => {
+    const messages = projectCodexThreadToMessages("session-1", {
+      id: "thread-1",
+      turns: [
+        {
+          id: "turn-1",
+          status: "completed",
+          startedAt: 1_777_000_000,
+          completedAt: 1_777_000_005,
+          durationMs: 5_000,
+          items: [
+            {
+              type: "userMessage",
+              id: "user-1",
+              content: [{ type: "text", text: "run checks" }]
+            },
+            {
+              type: "commandExecution",
+              id: "cmd-1",
+              command: "bun run typecheck",
+              aggregatedOutput: "ok",
+              exitCode: 0
+            },
+            {
+              type: "fileChange",
+              id: "file-1",
+              changes: [{ path: "web/src/App.tsx", additions: 2, deletions: 1 }]
+            },
+            {
+              type: "agentMessage",
+              id: "agent-1",
+              text: "Done."
+            }
+          ]
+        }
+      ]
+    });
+
+    const assistant = messages.find((message) => message.role === "assistant");
+    const command = assistant?.activities.find((activity) => activity.title === "Command");
+    const fileChanges = assistant?.activities.find((activity) => activity.title === "File changes");
+
+    expect(assistant?.content).toBe("Done.");
+    expect(command?.content).toBe("$ bun run typecheck\nok\nExit code: 0");
+    expect(fileChanges?.content).toBe("web/src/App.tsx +2 -1");
+  });
 });

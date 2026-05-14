@@ -13,12 +13,15 @@ import {
   Loader2,
   MessageSquare,
   Paperclip,
+  Pencil,
   Plus,
+  Search,
   Shield,
   ShieldAlert,
   ShieldCheck,
   Square,
   TerminalSquare,
+  Wrench,
   X
 } from "lucide-react";
 import type {
@@ -968,20 +971,22 @@ function AssistantActivityGroup({
   onFileLinkClick: (link: MarkdownFileLink) => void;
   onToggle: () => void;
 }) {
-  const activities = message.activities.filter((activity) => !isFileChangeActivity(activity));
+  const activities = message.activities;
+  const detailActivities = activities.filter((activity) => !isFileChangeActivity(activity));
   if (activities.length === 0) {
     return null;
   }
   const working = message.status === "streaming";
+  const summary = summarizeAssistantActivities(activities, working);
   return (
     <div className="assistant-activity">
       <button className="assistant-activity-toggle" type="button" onClick={onToggle}>
         {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-        <span>{working ? "Working..." : `Worked for ${formatDuration(message.duration_ms)}`}</span>
+        <AssistantActivitySummary summary={summary} durationMs={message.duration_ms} working={working} />
       </button>
-      {!collapsed ? (
+      {!collapsed && detailActivities.length > 0 ? (
         <div className="assistant-activity-body">
-          {activities.map((activity) => (
+          {detailActivities.map((activity) => (
             <div className="assistant-activity-section" key={activity.id}>
               <div className="assistant-activity-title">{activity.title}</div>
               {activity.content ? (
@@ -995,6 +1000,56 @@ function AssistantActivityGroup({
       ) : null}
     </div>
   );
+}
+
+type AssistantActivitySummaryKind = "command" | "file" | "tool" | "search" | "work";
+
+interface AssistantActivitySummaryInfo {
+  kind: AssistantActivitySummaryKind;
+  label: string;
+  meta?: string;
+  additions?: number;
+  deletions?: number;
+}
+
+function AssistantActivitySummary({
+  summary,
+  durationMs,
+  working
+}: {
+  summary: AssistantActivitySummaryInfo;
+  durationMs: number | null;
+  working: boolean;
+}) {
+  return (
+    <span className="assistant-activity-summary">
+      <AssistantActivitySummaryIcon kind={summary.kind} />
+      <span className="assistant-activity-summary-text">
+        <span className="assistant-activity-summary-label">{summary.label}</span>
+        {summary.meta ? <span className="assistant-activity-summary-meta">{summary.meta}</span> : null}
+      </span>
+      <ChangeStats additions={summary.additions} deletions={summary.deletions} />
+      {!working && !summary.meta && summary.kind === "work" ? (
+        <span className="assistant-activity-summary-meta">{formatDuration(durationMs)}</span>
+      ) : null}
+    </span>
+  );
+}
+
+function AssistantActivitySummaryIcon({ kind }: { kind: AssistantActivitySummaryKind }) {
+  if (kind === "command") {
+    return <TerminalSquare size={17} />;
+  }
+  if (kind === "file") {
+    return <Pencil size={17} />;
+  }
+  if (kind === "search") {
+    return <Search size={17} />;
+  }
+  if (kind === "tool") {
+    return <Wrench size={17} />;
+  }
+  return <ListChecks size={17} />;
 }
 
 interface FileChangeRow {
@@ -1321,6 +1376,116 @@ function getFileChangeActivities(message: ChatMessage): ChatActivity[] {
 
 function isFileChangeActivity(activity: ChatActivity): boolean {
   return activity.title.trim().toLowerCase() === "file changes";
+}
+
+function summarizeAssistantActivities(activities: ChatActivity[], working: boolean): AssistantActivitySummaryInfo {
+  const active = [...activities].reverse().find((activity) => activity.status === "streaming");
+  if (active) {
+    const activeSummary = summarizeSingleActivity(active, true);
+    if (activeSummary) {
+      return activeSummary;
+    }
+  }
+
+  const commandCount = activities.filter(isCommandActivity).length;
+  if (commandCount > 0) {
+    return {
+      kind: "command",
+      label: working ? "Running command" : `Ran ${commandCount} ${commandCount === 1 ? "command" : "commands"}`
+    };
+  }
+
+  const fileActivities = activities.filter(isFileChangeActivity);
+  const fileRows = parseFileChangeRows(fileActivities);
+  if (fileRows.length > 0) {
+    return summarizeFileRows(fileRows, working);
+  }
+
+  const toolCount = activities.filter(isToolActivity).length;
+  if (toolCount > 0) {
+    return {
+      kind: "tool",
+      label: working ? "Using tool" : `Used ${toolCount} ${toolCount === 1 ? "tool" : "tools"}`
+    };
+  }
+
+  const searchCount = activities.filter(isSearchActivity).length;
+  if (searchCount > 0) {
+    return {
+      kind: "search",
+      label: working ? "Searching web" : `Searched web ${searchCount} ${searchCount === 1 ? "time" : "times"}`
+    };
+  }
+
+  return { kind: "work", label: working ? "Working..." : "Worked for" };
+}
+
+function summarizeSingleActivity(activity: ChatActivity, working: boolean): AssistantActivitySummaryInfo | null {
+  if (isCommandActivity(activity)) {
+    return {
+      kind: "command",
+      label: working ? "Running command" : "Ran command",
+      meta: firstCommandLine(activity.content)
+    };
+  }
+  if (isFileChangeActivity(activity)) {
+    const rows = parseFileChangeRows([activity]);
+    return rows.length ? summarizeFileRows(rows, working) : { kind: "file", label: working ? "Editing file" : "Edited file" };
+  }
+  if (isSearchActivity(activity)) {
+    return { kind: "search", label: working ? "Searching web" : "Searched web", meta: activity.content.trim() || undefined };
+  }
+  if (isToolActivity(activity)) {
+    return { kind: "tool", label: working ? "Using tool" : "Used tool", meta: activity.content.trim() || undefined };
+  }
+  return null;
+}
+
+function summarizeFileRows(rows: FileChangeRow[], working: boolean): AssistantActivitySummaryInfo {
+  const totals = rows.reduce(
+    (sum, row) => ({
+      additions: sum.additions + (row.additions ?? 0),
+      deletions: sum.deletions + (row.deletions ?? 0),
+      hasStats: sum.hasStats || typeof row.additions === "number" || typeof row.deletions === "number"
+    }),
+    { additions: 0, deletions: 0, hasStats: false }
+  );
+  if (rows.length === 1) {
+    return {
+      kind: "file",
+      label: working ? "Editing" : "Edited",
+      meta: rows[0].path,
+      additions: totals.hasStats ? totals.additions : undefined,
+      deletions: totals.hasStats ? totals.deletions : undefined
+    };
+  }
+  return {
+    kind: "file",
+    label: working ? `Editing ${rows.length} files` : `Edited ${rows.length} files`,
+    additions: totals.hasStats ? totals.additions : undefined,
+    deletions: totals.hasStats ? totals.deletions : undefined
+  };
+}
+
+function isCommandActivity(activity: ChatActivity): boolean {
+  return activity.title.trim().toLowerCase() === "command";
+}
+
+function isToolActivity(activity: ChatActivity): boolean {
+  const title = activity.title.trim().toLowerCase();
+  return title === "tool call" || title === "mcp tool";
+}
+
+function isSearchActivity(activity: ChatActivity): boolean {
+  return activity.title.trim().toLowerCase() === "web search";
+}
+
+function firstCommandLine(content: string): string | undefined {
+  const line = content
+    .split("\n")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith("$ "));
+  return line ? line.slice(2) : undefined;
 }
 
 function parseFileChangeRows(activities: ChatActivity[]): FileChangeRow[] {

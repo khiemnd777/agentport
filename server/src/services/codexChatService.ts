@@ -955,6 +955,26 @@ export class CodexChatService {
       return;
     }
     const itemType = readString(item, "type");
+    const activityItem = formatActivityItem(item, "streaming");
+    if (activityItem) {
+      const itemId = readString(item, "id") ?? extractItemIdFromAppServerMessage(message);
+      if (!itemId) {
+        return;
+      }
+      const activity = await this.messageStore.upsertActivity(sessionId, active.assistantMessageId, {
+        itemId,
+        kind: "thinking",
+        title: activityItem.title,
+        content: activityItem.content,
+        status: "streaming",
+        startedAt: extractStartedAtIso(message)
+      });
+      if (activity) {
+        active.itemTargets.set(itemId, { target: "activity", activityId: activity.id });
+        await this.broadcastMessageUpdate(sessionId, active.assistantMessageId);
+      }
+      return;
+    }
     if (itemType === "plan") {
       const itemId = readString(item, "id");
       if (!itemId) {
@@ -1016,6 +1036,11 @@ export class CodexChatService {
       active.currentAgentMessageTarget = null;
     }
     if (target?.target === "activity") {
+      const item = extractItemFromAppServerMessage(message);
+      const activityItem = item ? formatActivityItem(item, "complete") : null;
+      if (activityItem) {
+        await this.messageStore.setActivityContent(sessionId, active.assistantMessageId, target.activityId, activityItem.content);
+      }
       if (finalText) {
         await this.messageStore.setActivityContent(sessionId, active.assistantMessageId, target.activityId, finalText);
       }
@@ -1272,6 +1297,69 @@ function formatPlanUpdate(message: AppServerMessage): string {
     lines.push(`- ${marker} ${stepText}`);
   }
   return lines.join("\n");
+}
+
+function formatActivityItem(
+  item: JsonRecord,
+  status: "streaming" | "complete"
+): { title: string; content: string } | null {
+  const type = readString(item, "type");
+  if (type === "commandExecution" || type === "command_execution") {
+    return { title: "Command", content: formatCommandExecution(item, status) };
+  }
+  if (type === "fileChange" || type === "file_change") {
+    return { title: "File changes", content: formatFileChange(item) };
+  }
+  if (type === "mcpToolCall" || type === "mcp_tool_call") {
+    return { title: "MCP tool", content: formatToolCall(item, status) };
+  }
+  if (type === "dynamicToolCall" || type === "dynamic_tool_call") {
+    return { title: "Tool call", content: formatToolCall(item, status) };
+  }
+  if (type === "webSearch" || type === "web_search") {
+    return { title: "Web search", content: readString(item, "query") ?? "Searching web..." };
+  }
+  return null;
+}
+
+function formatCommandExecution(item: JsonRecord, status: "streaming" | "complete"): string {
+  const command = readString(item, "command") ?? readString(item, "cmd") ?? "";
+  const lines = command ? [`$ ${command}`] : [status === "streaming" ? "Running command..." : "Command executed."];
+  const output = readString(item, "aggregatedOutput") ?? readString(item, "output");
+  const exitCode = readNumber(item, "exitCode") ?? readNumber(item, "exit_code");
+  if (output) {
+    lines.push("", output);
+  }
+  if (exitCode !== null) {
+    lines.push("", `Exit code: ${exitCode}`);
+  }
+  return lines.join("\n").trim();
+}
+
+function formatFileChange(item: JsonRecord): string {
+  const changes = Array.isArray(item.changes) ? item.changes : [];
+  if (changes.length === 0) {
+    const path = readString(item, "path") ?? readString(item, "file");
+    return path ?? "File changes recorded.";
+  }
+  return changes
+    .map((change) => {
+      const record = asRecord(change);
+      const path = readString(record, "path") ?? readString(record, "file") ?? "Changed file";
+      const additions = readNumber(record, "additions") ?? readNumber(record, "added");
+      const deletions = readNumber(record, "deletions") ?? readNumber(record, "deleted");
+      const stats = additions !== null || deletions !== null ? ` +${additions ?? 0} -${deletions ?? 0}` : "";
+      return `${path}${stats}`;
+    })
+    .join("\n");
+}
+
+function formatToolCall(item: JsonRecord, status: "streaming" | "complete"): string {
+  const server = readString(item, "server");
+  const namespace = readString(item, "namespace");
+  const tool = readString(item, "tool") ?? readString(item, "name") ?? "tool";
+  const itemStatus = readString(item, "status") ?? status;
+  return [server ?? namespace, tool, itemStatus].filter(Boolean).join(" / ");
 }
 
 function readThreadActive(thread: JsonRecord): boolean {

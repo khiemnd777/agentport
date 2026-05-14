@@ -208,12 +208,16 @@ function formatCommandExecution(item: JsonRecord): string {
 function formatFileChange(item: JsonRecord): string {
   const changes = Array.isArray(item.changes) ? item.changes : [];
   if (changes.length === 0) {
-    return "File changes recorded.";
+    return readString(item, "path") ?? readString(item, "file") ?? "File changes recorded.";
   }
   return changes
     .map((change) => {
       const record = asRecord(change);
-      return readString(record, "path") ?? readString(record, "file") ?? "Changed file";
+      const path = readString(record, "path") ?? readString(record, "file") ?? "Changed file";
+      const additions = readNumber(record, "additions") ?? readNumber(record, "added");
+      const deletions = readNumber(record, "deletions") ?? readNumber(record, "deleted");
+      const stats = additions !== null || deletions !== null ? ` +${additions ?? 0} -${deletions ?? 0}` : "";
+      return `${path}${stats}`;
     })
     .join("\n");
 }
