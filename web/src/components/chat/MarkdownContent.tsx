@@ -33,9 +33,17 @@ interface DiffSummaryRow {
   deletions: number;
 }
 
+type GitDirectiveKind = "stage" | "commit" | "push" | "create-branch" | "create-pr";
+
+interface GitDirective {
+  kind: GitDirectiveKind;
+  attrs: Record<string, string>;
+}
+
 export default function MarkdownContent({ content, onFileLinkClick }: Props) {
-  const blocks = parseMarkdown(content);
-  if (blocks.length === 0) {
+  const { markdown, gitDirectives } = extractGitDirectives(content);
+  const blocks = parseMarkdown(markdown);
+  if (blocks.length === 0 && gitDirectives.length === 0) {
     return null;
   }
   return (
@@ -43,6 +51,7 @@ export default function MarkdownContent({ content, onFileLinkClick }: Props) {
       {blocks.map((block, index) => (
         <Fragment key={index}>{renderBlock(block, onFileLinkClick)}</Fragment>
       ))}
+      {gitDirectives.length ? <GitDirectiveBlock directives={gitDirectives} /> : null}
     </div>
   );
 }
@@ -148,6 +157,82 @@ function ChangeStats({ additions, deletions }: { additions?: number; deletions?:
       {hasDeletions ? <span className="change-stat deletions">-{deletions}</span> : null}
     </span>
   );
+}
+
+function GitDirectiveBlock({ directives }: { directives: GitDirective[] }) {
+  return (
+    <div className="markdown-git-directives" aria-label="Git actions applied">
+      <div className="markdown-git-directives-title">Git actions applied</div>
+      <ul>
+        {directives.map((directive, index) => (
+          <li key={`${directive.kind}-${index}`}>
+            <span className="markdown-git-directive-status" aria-hidden="true">
+              OK
+            </span>
+            <span>{gitDirectiveLabel(directive)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function gitDirectiveLabel(directive: GitDirective): string {
+  if (directive.kind === "stage") {
+    return "Staged changes";
+  }
+  if (directive.kind === "commit") {
+    return "Created commit";
+  }
+  if (directive.kind === "push") {
+    return directive.attrs.branch ? `Pushed ${directive.attrs.branch}` : "Pushed branch";
+  }
+  if (directive.kind === "create-branch") {
+    return directive.attrs.branch ? `Created branch ${directive.attrs.branch}` : "Created branch";
+  }
+  if (directive.kind === "create-pr") {
+    const draft = directive.attrs.isDraft === "true" ? "draft " : "";
+    return `Opened ${draft}pull request`;
+  }
+  return "Applied git action";
+}
+
+function extractGitDirectives(content: string): { markdown: string; gitDirectives: GitDirective[] } {
+  const gitDirectives: GitDirective[] = [];
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const markdownLines = lines.filter((line) => {
+    const directive = parseGitDirective(line);
+    if (!directive) {
+      return true;
+    }
+    gitDirectives.push(directive);
+    return false;
+  });
+  return {
+    markdown: markdownLines.join("\n").trim(),
+    gitDirectives
+  };
+}
+
+function parseGitDirective(line: string): GitDirective | null {
+  const match = line.trim().match(/^::git-(stage|commit|push|create-branch|create-pr)\{([^}]*)\}$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    kind: match[1] as GitDirectiveKind,
+    attrs: parseDirectiveAttrs(match[2])
+  };
+}
+
+function parseDirectiveAttrs(input: string): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  const attrPattern = /([A-Za-z][A-Za-z0-9]*)=(?:"([^"]*)"|([^\s}]+))/g;
+  let match: RegExpExecArray | null;
+  while ((match = attrPattern.exec(input))) {
+    attrs[match[1]] = match[2] ?? match[3] ?? "";
+  }
+  return attrs;
 }
 
 function parseMarkdown(content: string): Block[] {

@@ -12,6 +12,7 @@ iPhone / iPad / Laptop
   -> MacBook 127.0.0.1:8787
   -> Agent Port web app
   -> Hono API + Bun WebSocket server
+  -> long-lived Codex app-server for synced chat threads
   -> PTY Session Manager
   -> local Codex CLI process
   -> whitelisted local repositories
@@ -20,7 +21,7 @@ iPhone / iPad / Laptop
 Core pieces:
 
 - `web/`: React, Vite, TypeScript, xterm.js browser UI.
-- `server/`: Bun, TypeScript, Hono REST API, WebSocket terminal bridge, PTY manager.
+- `server/`: Bun, TypeScript, Hono REST API, WebSocket terminal bridge, Codex app-server sync, PTY manager.
 - `data/`: file-based storage for sessions, tasks, events, and terminal logs.
 - `config.json`: repo whitelist and local runtime settings.
 
@@ -58,7 +59,7 @@ APP_PASSWORD=choose-a-strong-local-password
 
 The Bun package scripts load `.env` automatically with `--env-file=../.env` for `server/` and `web/`. The backend also loads the app-root `.env` defensively at startup, so direct server launches still pick up `APP_PASSWORD`. Vite derives its HTTP and WebSocket proxy targets from `RCD_SERVER_HOST` and `RCD_SERVER_PORT`, so server location is configured in one place.
 
-Codex CLI must already be installed and available as `codex` on the MacBook. If your command is different, update `codex.command` in `config.json`.
+Codex CLI must already be installed and available as `codex` on the MacBook. If your command is different, update `codex.command` in `config.json`. Chat sync uses `codex app-server` as the source of truth for Codex threads; Agent Port prefers the running Codex Desktop app-server proxy and falls back to a standalone stdio app-server when Desktop is unavailable.
 
 `node-pty` is tried first for interactive terminal behavior. On this Bun/macOS runtime, `node-pty` can fail at spawn time with `posix_spawnp failed`; when that happens the server automatically falls back to the built-in macOS `/usr/bin/expect` PTY bridge. The fallback still runs Codex in a PTY and streams browser input/output through Bun.
 
@@ -154,11 +155,21 @@ Keep the private key in `.env` only. After restart, open Agent Port on the devic
 
 1. Sign in with `APP_PASSWORD`.
 2. Pick a whitelisted repository.
-3. Create a session. The backend spawns `codex` in that repo through a PTY.
-4. Use the console for direct interactive terminal control.
-5. Send a task from the task panel. The backend wraps the prompt with Agent Port instructions.
+3. Create a session. The backend starts a local terminal session and creates or resumes a synced Codex thread when chat input is sent.
+4. Use the chat composer for the managed synced thread. Codex Desktop and Agent Port can continue the same thread when it is idle.
+5. Use the console for direct interactive terminal control when needed.
 6. Watch the lifecycle timeline and git changes panel.
 7. Close the session when finished.
+
+## Codex Desktop Sync
+
+Agent Port treats the Codex thread store as the source of truth for chat history. It keeps a long-lived `codex app-server` connection, prefers `codex app-server proxy` into the running Codex Desktop app-server for two-way Desktop/Mobile continuity, falls back to standalone stdio app-server when Desktop is unavailable, imports whitelisted Codex Desktop threads by repository cwd, and projects thread turns/items into the browser chat.
+
+- If Agent Port starts a thread, Codex Desktop can show and continue that same Codex thread.
+- If Codex Desktop adds turns to that thread, Agent Port refreshes and shows those turns.
+- If Codex Desktop is currently running a turn, Agent Port marks the thread as `Desktop active` and disables the composer until the thread is idle.
+- Agent Port does not control the Codex Desktop UI or answer approvals/user-input requests for Desktop-owned active turns.
+- The terminal console remains a separate live Codex CLI process and is kept as an escape hatch, not the chat sync source of truth.
 
 ## Session Lifecycle
 
@@ -181,13 +192,13 @@ Use the sidebar toggle to switch between active sessions and history. Ended sess
 
 ## WAITING_FOR_USER
 
-Remote-managed tasks use explicit Codex markers:
+Legacy PTY-managed tasks use explicit Codex markers:
 
 - `[USER_INPUT_REQUIRED] <question>` moves a web-managed task to `WAITING_FOR_USER`.
 - `[TASK_COMPLETED]` moves the task to `COMPLETED`.
 - `[TASK_BLOCKED] <reason>` moves the task to `FAILED`.
 
-When the task is `WAITING_FOR_USER`, the UI shows a follow-up input. Submitting an answer writes it back to the same Codex PTY and returns the task to `RUNNING`.
+When a legacy PTY task is `WAITING_FOR_USER`, the UI shows a follow-up input. Synced app-server chat turns use Codex app-server user-input requests instead; Agent Port only answers requests for turns it started.
 
 ## Terminal State vs Task State
 
@@ -215,6 +226,8 @@ A terminal can remain alive after a task completes, and a session can run multip
 
 Web-created sessions use `control_mode: "web_managed"`. Only web-managed tasks may enter `WAITING_FOR_USER`, because the browser needs to show a clear answer box.
 
+Synced Codex Desktop threads imported from whitelisted repositories also use `web_managed` so Agent Port can start the next turn when the thread is idle. While a Desktop-owned turn is active, the session enters an observe-only control state and remote input is disabled.
+
 Future imported local terminal sessions should use `control_mode: "local_terminal"`. Those sessions may record that Codex requested input, but remote input is disabled and `WAITING_FOR_USER` is not entered.
 
 ## Security Notes
@@ -239,3 +252,4 @@ Future imported local terminal sessions should use `control_mode: "local_termina
 - Task cancel records cancellation but does not yet provide a full workflow playback viewer.
 - Git operations are read-only; commit, push, and branch management are intentionally out of scope.
 - Changing `APP_PASSWORD` invalidates existing auth sessions.
+- Synced Codex threads are imported only when their cwd matches a whitelisted repo path.

@@ -51,6 +51,8 @@ export class SessionCleanupService {
   }
 
   async delete(sessionId: string): Promise<void> {
+    const sessionForDelete = this.sessionService.get(sessionId);
+    await this.sessionService.forgetCodexThread(sessionForDelete.codex_thread_id);
     await this.taskService.cancelActiveTaskForSession(sessionId);
     if (this.ptySessionManager.hasActiveSession(sessionId)) {
       await this.ptySessionManager.closeSession(sessionId);

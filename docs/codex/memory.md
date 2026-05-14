@@ -17,6 +17,8 @@ Official Codex memories are generated state under the Codex home directory, norm
 
 ## Important Context Boundary
 
+The chat workspace projects the local Codex thread store through Codex app-server. Agent Port prefers the running Codex Desktop app-server proxy and falls back to a standalone stdio app-server, so Codex Desktop and Agent Port can continue the same thread when it is idle.
+
 The browser terminal controls a new/separate Codex CLI session. It does not inherit:
 
 - Codex Desktop app conversation history.
@@ -24,6 +26,8 @@ The browser terminal controls a new/separate Codex CLI session. It does not inhe
 - Thread-specific memory or tool state.
 
 Same cwd does not imply same Codex context.
+
+When Codex Desktop owns an active turn, Agent Port should observe and sync transcript state but should not answer approvals, user-input requests, or interrupts for that Desktop-owned turn.
 
 ## Runtime Decisions
 

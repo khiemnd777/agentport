@@ -7,7 +7,18 @@ interface PendingRequest {
 
 export type AppServerMessage = JsonRecord;
 
-export class CodexAppServerClient {
+export type CodexAppServerLaunchMode = "desktop_proxy" | "standalone";
+
+export interface CodexAppServerConnection {
+  readonly launchMode: CodexAppServerLaunchMode;
+  initialize(): Promise<void>;
+  request<T = unknown>(method: string, params: unknown): Promise<T>;
+  notify(method: string, params?: unknown): void;
+  respond(id: number, result: unknown): void;
+  close(): void;
+}
+
+export class CodexAppServerClient implements CodexAppServerConnection {
   private readonly process: Bun.Subprocess<"pipe", "pipe", "pipe">;
   private readonly pending = new Map<number, PendingRequest>();
   private nextRequestId = 1;
@@ -20,9 +31,10 @@ export class CodexAppServerClient {
     args: string[],
     private readonly onNotification: (message: AppServerMessage) => void,
     private readonly onServerRequest: (client: CodexAppServerClient, message: AppServerMessage) => void,
-    private readonly onExit?: (error: Error) => void
+    private readonly onExit?: (error: Error) => void,
+    readonly launchMode: CodexAppServerLaunchMode = "standalone"
   ) {
-    this.process = Bun.spawn([command, ...args, "app-server", "--listen", "stdio://"], {
+    this.process = Bun.spawn(buildCodexAppServerCommand(command, args, launchMode), {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe"
@@ -35,7 +47,7 @@ export class CodexAppServerClient {
   async initialize(): Promise<void> {
     await this.request("initialize", {
       clientInfo: { name: "agent-port", title: "Agent Port", version: "0" },
-      capabilities: { experimentalApi: true, suppressNotifications: [] }
+      capabilities: { experimentalApi: true, optOutNotificationMethods: [] }
     });
     this.notify("initialized");
   }
@@ -184,6 +196,17 @@ export class CodexAppServerClient {
     }
     this.pending.clear();
   }
+}
+
+export function buildCodexAppServerCommand(
+  command: string,
+  args: string[],
+  launchMode: CodexAppServerLaunchMode
+): string[] {
+  if (launchMode === "desktop_proxy") {
+    return [command, ...args, "app-server", "proxy"];
+  }
+  return [command, ...args, "app-server", "--listen", "stdio://"];
 }
 
 function asRecord(value: unknown): JsonRecord | null {

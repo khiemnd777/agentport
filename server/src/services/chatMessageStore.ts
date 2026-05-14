@@ -65,6 +65,13 @@ export class ChatMessageStore {
     return message;
   }
 
+  async replaceSession(sessionId: string, messages: ChatMessage[]): Promise<void> {
+    validateSessionId(sessionId);
+    const normalized = messages.map(normalizeMessage).sort((a, b) => a.created_at.localeCompare(b.created_at));
+    this.messages.set(sessionId, normalized);
+    await this.saveSession(sessionId, normalized);
+  }
+
   async appendContent(sessionId: string, messageId: string, delta: string): Promise<ChatMessage | null> {
     if (!delta) {
       return null;

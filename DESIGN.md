@@ -4,13 +4,13 @@
 
 Agent Port is a private, production-like browser UI for controlling local Codex CLI sessions on a MacBook through Tailscale. It should feel like dense operational software: quiet, precise, responsive, and built for repeated use.
 
-The browser session controls a separate local Codex CLI process spawned in a whitelisted repo. It does not share conversation context, active skills, or memory with the Codex Desktop app thread. UI copy should make that boundary clear anywhere the user might confuse the two contexts.
+The chat workspace is synced through the local Codex thread store by way of Codex app-server. Codex Desktop and Agent Port can continue the same thread when it is idle. The terminal console remains a separate local Codex CLI process spawned in a whitelisted repo and should be described as an escape hatch, not the chat source of truth.
 
 ## Product Principles
 
 - Prefer operational density over decorative presentation. Do not build marketing-style sections, hero layouts, oversized cards, gradients, or ornamental visuals.
-- Keep session identity visible: selected repo, branch, terminal status, task status, and control mode should be easy to find.
-- Treat the task/chat composer as the preferred managed workflow. Treat the terminal as an escape hatch for direct Codex CLI interaction.
+- Keep session identity visible: selected repo, branch, terminal status, task status, sync state, and control mode should be easy to find.
+- Treat the task/chat composer as the preferred synced workflow. Treat the terminal as an escape hatch for direct Codex CLI interaction.
 - Keep git surfaces read-only unless there is an explicit product decision to add write operations.
 - Use repo keys in browser-facing flows. Do not expose or ask for raw repo paths in UI.
 - Make stopped, archived, waiting, busy, and error states explicit. Avoid silent failure.
@@ -196,7 +196,7 @@ Session rows show title, terminal status, task status, and archived state. Archi
 The chat workspace has:
 
 - Header with session title, repo/branch metadata, status badges, and console shortcut.
-- System note explaining the separate local Codex CLI context.
+- System note explaining whether the chat is synced with the Codex thread store or waiting for the first message to create a synced thread.
 - Message thread.
 - Composer or waiting-for-user composer.
 
@@ -228,6 +228,7 @@ Rules:
 - Preserve `Cmd+Enter` send behavior.
 - Keep placeholder copy state-aware: no session, archived, waiting for user, busy, first prompt, or follow-up.
 - Plan mode copy should clarify that Codex will propose a plan and wait for confirmation before edits.
+- If Codex Desktop owns an active turn, disable the composer and show observe-only copy until the thread is idle.
 
 ### Waiting For User
 
@@ -253,6 +254,8 @@ Terminal UI uses a dark terminal shell in both app themes. Keep:
 - xterm area with stable height.
 
 Do not add arbitrary shell command execution controls.
+
+The terminal is not the synced chat source of truth. It may be disconnected while a synced Codex thread remains readable and continuable through the chat workspace.
 
 ### Inspector
 
@@ -326,7 +329,7 @@ Use badges for these states. Keep labels uppercase or normalized consistently wi
 - Avoid marketing copy, tutorials, or visible instructions that describe obvious UI mechanics.
 - Use `chat` for the managed browser workflow and `console` for the terminal surface.
 - Use `session` when discussing the underlying Codex CLI process/lifecycle.
-- Mention the context boundary where it matters: the browser chat controls a separate local Codex CLI session and does not share context with Codex Desktop.
+- Mention the context boundary where it matters: chat is synced through Codex app-server/thread store, while the console is a separate local Codex CLI process.
 - Never document real secrets. Refer to `APP_PASSWORD` by name only.
 - Do not expose raw local repo paths in UI copy; show repo labels, repo keys, branch names, and file paths inside the whitelisted repo context.
 
@@ -371,7 +374,7 @@ During implementation:
 
 - Use existing tokens, components, and layout patterns.
 - Keep repo/session/task context visible.
-- Preserve the Codex Desktop vs browser CLI boundary in copy where relevant.
+- Preserve the Codex Desktop vs browser console boundary in copy where relevant, especially when a Desktop-owned turn makes Agent Port observe-only.
 - Keep terminal and git safety boundaries intact.
 - Check empty, loading, busy, waiting, error, archived, and narrow-mobile states.
 

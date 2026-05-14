@@ -4,8 +4,10 @@ import type { SessionCleanupService } from "../services/sessionCleanupService";
 import type { SessionService } from "../services/sessionService";
 import { toPublicSession } from "../services/sessionService";
 import type { TaskService } from "../services/taskService";
+import type { CodexChatService } from "../services/codexChatService";
 import { toPublicTask } from "../services/taskService";
 import { badRequest } from "../utils/httpErrors";
+import { parsePageLimit } from "../utils/pagination";
 import { parseJsonObject, validateBranchName, validateRepoKey, validateSessionId } from "../utils/validation";
 import type { SessionSource } from "../domain/sessionTypes";
 
@@ -13,7 +15,8 @@ export function sessionRoutes(
   sessionService: SessionService,
   taskService: TaskService,
   ptySessionManager: PtySessionManager,
-  sessionCleanupService: SessionCleanupService
+  sessionCleanupService: SessionCleanupService,
+  codexChatService: CodexChatService
 ): Hono {
   const app = new Hono();
 
@@ -54,8 +57,14 @@ export function sessionRoutes(
 
   app.get("/", async (c) => {
     await sessionCleanupService.sweep();
-    const includeArchived = c.req.query("include_archived") === "true";
-    return c.json({ sessions: sessionService.listPublic({ includeArchived }) });
+    void codexChatService.syncSessions({ importThreads: true, readThreads: false }).catch(() => undefined);
+    const view = parseSessionListView(c.req.query("view"), c.req.query("include_archived"));
+    const page = sessionService.listPublicPage({
+      view,
+      limit: parsePageLimit(c.req.query("limit")),
+      cursor: c.req.query("cursor")
+    });
+    return c.json({ sessions: page.items, next_cursor: page.next_cursor, has_more: page.has_more });
   });
 
   app.get("/:id", (c) => {
@@ -74,6 +83,18 @@ export function sessionRoutes(
     const id = validateSessionId(c.req.param("id"));
     await sessionCleanupService.archive(id);
     return c.json({ session: sessionService.getPublic(id) });
+  });
+
+  app.patch("/:id/run-profile", async (c) => {
+    const id = validateSessionId(c.req.param("id"));
+    const body = parseJsonObject(await c.req.json().catch(() => ({})));
+    const session = await sessionService.updateRunProfile(id, {
+      model: body.model,
+      reasoning_effort: body.reasoning_effort,
+      permission_mode: body.permission_mode,
+      plan_mode: body.plan_mode
+    });
+    return c.json({ session: toPublicSession(session) });
   });
 
   app.delete("/:id", async (c) => {
@@ -96,4 +117,14 @@ export function sessionRoutes(
 
 function detectSource(userAgent: string): SessionSource {
   return /iphone|ipad|mobile/i.test(userAgent) ? "iphone_web" : "desktop_web";
+}
+
+function parseSessionListView(view: string | undefined, includeArchived: string | undefined): "active" | "archived" | "all" {
+  if (view === undefined || view === "") {
+    return includeArchived === "true" ? "all" : "active";
+  }
+  if (view === "active" || view === "archived" || view === "all") {
+    return view;
+  }
+  throw badRequest("Unsupported sessions view");
 }

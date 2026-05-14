@@ -13,4 +13,5 @@ data/runtime/
 data/attachments/
 data/auth/
 data/notifications/
+data/codex/
 .DS_Store

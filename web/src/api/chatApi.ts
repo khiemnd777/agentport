@@ -1,7 +1,9 @@
 import {
   apiFetch,
   type ChatAttachment,
+  type CodexHistoryThread,
   type ChatMessage,
+  type CodexSession,
   type CodexPermissionMode,
   type CodexReasoningEffort,
   type PublicCodexModel,
@@ -22,6 +24,31 @@ export function listCodexModels(): Promise<{
   defaultPermissionMode: CodexPermissionMode;
 }> {
   return apiFetch("/api/chat/models");
+}
+
+export function listCodexHistory(
+  repoKey?: string | null,
+  input: { limit?: number; cursor?: string | null } = {}
+): Promise<{ threads: CodexHistoryThread[]; next_cursor: string | null; has_more: boolean }> {
+  const params = new URLSearchParams();
+  if (repoKey) {
+    params.set("repo_key", repoKey);
+  }
+  if (input.limit !== undefined) {
+    params.set("limit", String(input.limit));
+  }
+  if (input.cursor) {
+    params.set("cursor", input.cursor);
+  }
+  const query = params.toString();
+  return apiFetch(`/api/codex/history${query ? `?${query}` : ""}`);
+}
+
+export function openCodexHistoryThread(threadId: string, repoKey: string): Promise<{ session: CodexSession }> {
+  return apiFetch(`/api/codex/history/${encodeURIComponent(threadId)}/open`, {
+    method: "POST",
+    body: JSON.stringify({ repo_key: repoKey })
+  });
 }
 
 export function sendChatMessage(

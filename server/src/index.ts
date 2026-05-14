@@ -17,6 +17,7 @@ import { ChatMessageStore } from "./services/chatMessageStore";
 import { AttachmentService } from "./services/attachmentService";
 import { FileContentService } from "./services/fileContentService";
 import { CodexChatService } from "./services/codexChatService";
+import { CodexAppServerHost } from "./services/codexAppServerHost";
 import { SessionCleanupService } from "./services/sessionCleanupService";
 import { PushNotificationService } from "./services/pushNotificationService";
 import { ServerControlService } from "./services/serverControlService";
@@ -69,7 +70,16 @@ await attachmentService.init();
 const fileContentService = new FileContentService();
 
 const chatBroadcaster = new ChatSocketBroadcaster();
-const codexChatService = new CodexChatService(config, sessionService, chatMessageStore, chatBroadcaster, attachmentService);
+const codexAppServerHost = new CodexAppServerHost(config.codex.command, config.codex.defaultArgs);
+const codexChatService = new CodexChatService(
+  config,
+  sessionService,
+  chatMessageStore,
+  chatBroadcaster,
+  attachmentService,
+  repoRegistry,
+  codexAppServerHost
+);
 
 const ptySessionManager = new PtySessionManager(config, sessionService, taskService, eventStore, logStore);
 const sessionCleanupService = new SessionCleanupService(
@@ -122,7 +132,7 @@ app.route("/api/auth", authRoutes(authService));
 app.use("/api/*", requireAuth(authService));
 app.route("/api/repos", repoRoutes(repoRegistry, repoManagementService, sessionService));
 app.route("/api/admin", adminRoutes(serverControlService));
-app.route("/api/sessions", sessionRoutes(sessionService, taskService, ptySessionManager, sessionCleanupService));
+app.route("/api/sessions", sessionRoutes(sessionService, taskService, ptySessionManager, sessionCleanupService, codexChatService));
 app.route("/api", chatRoutes(sessionService, codexChatService));
 app.route("/api", attachmentRoutes(sessionService, attachmentService));
 app.route("/api", fileRoutes(sessionService, fileContentService));

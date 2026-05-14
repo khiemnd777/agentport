@@ -72,6 +72,18 @@ const session: CodexSession = {
   task_status: "IDLE",
   active_task_id: null,
   codex_thread_id: null,
+  sync_status: "local_only",
+  control_state: "observing",
+  last_synced_at: null,
+  last_sync_error: null,
+  codex_thread_updated_at: null,
+  run_profile: {
+    model: "gpt-5.5",
+    reasoning_effort: "medium",
+    permission_mode: "default",
+    plan_mode: false,
+    updated_at: "2026-05-11T00:00:00.000Z"
+  },
   waiting_user_input: null,
   created_at: "2026-05-11T00:00:00.000Z",
   updated_at: "2026-05-11T00:00:00.000Z",
@@ -121,6 +133,135 @@ describe("codex chat service models", () => {
         }
       ]
     });
+  });
+
+  test("lists Codex history from whitelisted repos without exposing paths", async () => {
+    const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const repo = { key: "noah", label: "Noah", path: "/private/noah" };
+    const createdAt = Date.parse("2026-05-14T00:00:00.000Z") / 1000;
+    const updatedAt = Date.parse("2026-05-14T00:01:00.000Z") / 1000;
+    const service = new CodexChatService(
+      config,
+      {
+        findByCodexThreadId: () => null,
+        isCodexThreadForgotten: () => false
+      } as never,
+      null as never,
+      null as never,
+      null,
+      {
+        list: () => [repo],
+        getRepo: () => repo
+      } as never,
+      {
+        onNotification: () => undefined,
+        onServerRequest: () => undefined,
+        onExit: () => undefined,
+        request: async (method: string, params: Record<string, unknown>) => {
+          requests.push({ method, params });
+          return {
+            data: [
+              {
+                id: "thread-1",
+                name: "Giảm dung lượng logo intake",
+                createdAt,
+                updatedAt,
+                status: { type: "active" }
+              }
+            ]
+          };
+        }
+      } as never
+    );
+
+    const threads = await service.listCodexHistory("noah");
+
+    expect(requests[0]).toMatchObject({ method: "thread/list", params: { cwd: "/private/noah" } });
+    expect(threads).toEqual([
+      {
+        id: "thread-1",
+        title: "Giảm dung lượng logo intake",
+        repo_key: "noah",
+        repo_label: "Noah",
+        created_at: "2026-05-14T00:00:00.000Z",
+        updated_at: "2026-05-14T00:01:00.000Z",
+        control_state: "desktop_active",
+        imported_session_id: null,
+        forgotten: false
+      }
+    ]);
+    expect(JSON.stringify(threads)).not.toContain("/private/noah");
+  });
+
+  test("keeps locally represented Codex threads out of Codex history", async () => {
+    const repo = { key: "noah", label: "Noah", path: "/private/noah" };
+    const service = new CodexChatService(
+      config,
+      {
+        findByCodexThreadId: (threadId: string) =>
+          threadId === "thread-active" ? ({ id: "11111111-1111-4111-8111-111111111111" } as CodexSession) : null,
+        isCodexThreadForgotten: () => false
+      } as never,
+      null as never,
+      null as never,
+      null,
+      {
+        list: () => [repo],
+        getRepo: () => repo
+      } as never,
+      {
+        onNotification: () => undefined,
+        onServerRequest: () => undefined,
+        onExit: () => undefined,
+        request: async () => ({
+          data: [
+            { id: "thread-active", name: "Active local thread", updatedAt: 1778716800, status: { type: "inactive" } },
+            { id: "thread-history", name: "History only thread", updatedAt: 1778716900, status: { type: "inactive" } }
+          ]
+        })
+      } as never
+    );
+
+    expect((await service.listCodexHistory("noah")).map((thread) => thread.id)).toEqual(["thread-history"]);
+  });
+
+  test("pages Codex history with stable cursors", async () => {
+    const repo = { key: "noah", label: "Noah", path: "/private/noah" };
+    const service = new CodexChatService(
+      config,
+      {
+        findByCodexThreadId: () => null,
+        isCodexThreadForgotten: () => false
+      } as never,
+      null as never,
+      null as never,
+      null,
+      {
+        list: () => [repo],
+        getRepo: () => repo
+      } as never,
+      {
+        onNotification: () => undefined,
+        onServerRequest: () => undefined,
+        onExit: () => undefined,
+        request: async () => ({
+          data: [
+            { id: "thread-oldest", name: "Oldest", updatedAt: 1778716800, status: { type: "inactive" } },
+            { id: "thread-middle", name: "Middle", updatedAt: 1778716900, status: { type: "inactive" } },
+            { id: "thread-newest", name: "Newest", updatedAt: 1778717000, status: { type: "inactive" } }
+          ]
+        })
+      } as never
+    );
+
+    const firstPage = await service.listCodexHistoryPage("noah", { limit: 2 });
+    const secondPage = await service.listCodexHistoryPage("noah", { limit: 2, cursor: firstPage.next_cursor });
+
+    expect(firstPage.items.map((thread) => thread.id)).toEqual(["thread-newest", "thread-middle"]);
+    expect(firstPage.has_more).toBe(true);
+    expect(typeof firstPage.next_cursor).toBe("string");
+    expect(secondPage.items.map((thread) => thread.id)).toEqual(["thread-oldest"]);
+    expect(secondPage.has_more).toBe(false);
   });
 
   test("rejects unsupported model before starting a turn", async () => {
@@ -253,6 +394,87 @@ describe("codex chat service streaming", () => {
     expect(stored.content).toBe("Tôi dùng quy chuẩn `DESIGN.md`.");
   });
 
+  test("does not append untargeted thinking deltas into assistant answer content", async () => {
+    const dataRoot = await mkdtemp(path.join(tmpdir(), "agent-port-chat-thinking-leak-"));
+    tempRoots.push(dataRoot);
+    const messageStore = new ChatMessageStore(dataRoot);
+    await messageStore.init();
+    const assistantMessage = await messageStore.create({
+      sessionId: session.id,
+      role: "assistant",
+      content: "",
+      status: "streaming",
+      turnId: "turn-1"
+    });
+    const service = new CodexChatService(
+      config,
+      {
+        setCodexThreadId: async () => undefined,
+        setTaskState: async () => undefined,
+        getPublic: () => session
+      } as never,
+      messageStore,
+      { broadcast: () => undefined } as never
+    );
+    const serviceInternals = service as unknown as {
+      activeTurns: Map<string, unknown>;
+      handleAppServerNotification: (
+        sessionId: string,
+        assistantMessageId: string,
+        message: Record<string, unknown>
+      ) => Promise<void>;
+    };
+    serviceInternals.activeTurns.set(session.id, {
+      assistantMessageId: assistantMessage.id,
+      threadId: "thread-1",
+      turnId: "turn-1",
+      finished: false,
+      pendingUserInput: null,
+      itemTargets: new Map(),
+      currentAgentMessageItemId: null,
+      currentAgentMessageTarget: null
+    });
+
+    await serviceInternals.handleAppServerNotification(session.id, assistantMessage.id, {
+      method: "item/started",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: {
+          type: "agentMessage",
+          id: "thinking-item",
+          phase: "commentary",
+          text: "Tôi sẽ lưu trạng thái này trên borrower."
+        }
+      }
+    });
+    await serviceInternals.handleAppServerNotification(session.id, assistantMessage.id, {
+      method: "item/completed",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: {
+          type: "agentMessage",
+          id: "thinking-item",
+          phase: "commentary",
+          text: "Tôi sẽ lưu trạng thái này trên borrower."
+        }
+      }
+    });
+    await serviceInternals.handleAppServerNotification(session.id, assistantMessage.id, {
+      method: "item/agentMessage/delta",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        delta: "Tôi sẽ lưu"
+      }
+    });
+
+    const [stored] = await messageStore.list(session.id);
+    expect(stored.activities[0].content).toBe("Tôi sẽ lưu trạng thái này trên borrower.");
+    expect(stored.content).toBe("");
+  });
+
   test("bridges app-server user input requests through WAITING_FOR_USER", async () => {
     const dataRoot = await mkdtemp(path.join(tmpdir(), "agent-port-chat-input-"));
     tempRoots.push(dataRoot);
@@ -357,5 +579,85 @@ describe("codex chat service streaming", () => {
       }
     ]);
     expect(broadcasts.length).toBeGreaterThan(0);
+  });
+
+  test("routes shared app-server notifications only to the matching active thread", async () => {
+    const dataRoot = await mkdtemp(path.join(tmpdir(), "agent-port-chat-shared-"));
+    tempRoots.push(dataRoot);
+    const messageStore = new ChatMessageStore(dataRoot);
+    await messageStore.init();
+    const otherSession: CodexSession = {
+      ...session,
+      id: "22222222-2222-4222-8222-222222222222",
+      title: "Other",
+      codex_thread_id: "thread-2"
+    };
+    const firstAssistant = await messageStore.create({
+      sessionId: session.id,
+      role: "assistant",
+      content: "",
+      status: "streaming",
+      turnId: "turn-1"
+    });
+    const secondAssistant = await messageStore.create({
+      sessionId: otherSession.id,
+      role: "assistant",
+      content: "",
+      status: "streaming",
+      turnId: "turn-2"
+    });
+    const service = new CodexChatService(
+      config,
+      {
+        setCodexThreadId: async () => session,
+        getPublic: (sessionId: string) => (sessionId === otherSession.id ? otherSession : session)
+      } as never,
+      messageStore,
+      { broadcast: () => undefined } as never
+    );
+    const serviceInternals = service as unknown as {
+      activeTurns: Map<string, unknown>;
+      handleSharedAppServerNotification: (message: Record<string, unknown>) => Promise<void>;
+    };
+    serviceInternals.activeTurns.set(session.id, {
+      assistantMessageId: firstAssistant.id,
+      threadId: "thread-1",
+      turnId: "turn-1",
+      finished: false,
+      itemTargets: new Map()
+    });
+    serviceInternals.activeTurns.set(otherSession.id, {
+      assistantMessageId: secondAssistant.id,
+      threadId: "thread-2",
+      turnId: "turn-2",
+      finished: false,
+      itemTargets: new Map()
+    });
+
+    await serviceInternals.handleSharedAppServerNotification({
+      method: "item/started",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: {
+          type: "agentMessage",
+          id: "answer-item",
+          phase: null
+        }
+      }
+    });
+    await serviceInternals.handleSharedAppServerNotification({
+      method: "item/agentMessage/delta",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        delta: "Only thread one"
+      }
+    });
+
+    const [firstStored] = await messageStore.list(session.id);
+    const [secondStored] = await messageStore.list(otherSession.id);
+    expect(firstStored.content).toBe("Only thread one");
+    expect(secondStored.content).toBe("");
   });
 });

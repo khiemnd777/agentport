@@ -9,22 +9,26 @@ import type {
 } from "../config";
 import type { PublicAttachmentMetadata } from "../domain/attachmentTypes";
 import type { ChatMessage } from "../domain/chatTypes";
-import type { CodexSession, WaitingUserInput, WaitingUserInputQuestion } from "../domain/sessionTypes";
-import { badRequest, conflict } from "../utils/httpErrors";
+import type { CodexSession, ControlState, WaitingUserInput, WaitingUserInputQuestion } from "../domain/sessionTypes";
+import type { Repo } from "../domain/repoTypes";
+import { badRequest, conflict, notFound } from "../utils/httpErrors";
 import { createId, nowIso } from "../utils/ids";
+import { asCursorRecord, decodePageCursor, encodePageCursor, type CursorPage } from "../utils/pagination";
 import {
   extractAgentDeltaFromCodexEvent,
   extractFinalAgentTextFromCodexEvent,
   extractThreadIdFromCodexEvent
 } from "./codexExecEventParser";
-import { CodexAppServerClient, type AppServerMessage } from "./codexAppServerClient";
+import { type AppServerMessage, type CodexAppServerConnection } from "./codexAppServerClient";
+import { CodexAppServerHost } from "./codexAppServerHost";
+import { projectCodexThreadToMessages } from "./codexThreadProjection";
 import type { AttachmentRecord, AttachmentService } from "./attachmentService";
 import type { ChatMessageStore } from "./chatMessageStore";
 import type { SessionService } from "./sessionService";
+import type { RepoRegistry } from "./repoRegistry";
 import type { ChatSocketBroadcaster } from "../websocket/chatSocket";
 
 interface ActiveTurn {
-  client: CodexAppServerClient;
   assistantMessageId: string;
   threadId: string | null;
   turnId: string | null;
@@ -39,7 +43,7 @@ type JsonRecord = Record<string, unknown>;
 type ItemTarget = { target: "assistant" } | { target: "activity"; activityId: string };
 interface PendingUserInputRequest {
   requestId: number;
-  client: CodexAppServerClient;
+  client: CodexAppServerConnection;
   threadId: string | null;
   turnId: string | null;
   questions: WaitingUserInputQuestion[];
@@ -60,6 +64,18 @@ export interface PublicCodexPermissionMode {
   label: string;
   description: string;
   highRisk: boolean;
+}
+
+export interface PublicCodexThreadHistoryItem {
+  id: string;
+  title: string;
+  repo_key: string;
+  repo_label: string;
+  created_at: string | null;
+  updated_at: string | null;
+  control_state: ControlState;
+  imported_session_id: string | null;
+  forgotten: boolean;
 }
 
 interface CodexRuntimePermissions {
@@ -87,18 +103,39 @@ Rules for this turn:
 
 User request:`;
 
+const CODEX_HISTORY_SCAN_LIMIT = 500;
+
 export class CodexChatService {
   private readonly activeTurns = new Map<string, ActiveTurn>();
+  private indexSyncInFlight: Promise<void> | null = null;
 
   constructor(
     private readonly config: AppConfig,
     private readonly sessionService: SessionService,
     private readonly messageStore: ChatMessageStore,
     private readonly broadcaster: ChatSocketBroadcaster,
-    private readonly attachmentService: AttachmentService | null = null
-  ) {}
+    private readonly attachmentService: AttachmentService | null = null,
+    private readonly repoRegistry: RepoRegistry | null = null,
+    private readonly appServerHost: CodexAppServerHost = new CodexAppServerHost(config.codex.command, config.codex.defaultArgs)
+  ) {
+    this.appServerHost.onNotification((message) => {
+      void this.handleSharedAppServerNotification(message);
+    });
+    this.appServerHost.onServerRequest((client, message) => this.handleSharedAppServerRequest(client, message));
+    this.appServerHost.onExit((error) => {
+      void this.failActiveTurns(error.message);
+    });
+  }
 
   async listMessages(sessionId: string): Promise<ChatMessage[]> {
+    const session = this.sessionService.get(sessionId);
+    await this.syncSessionThread(session).catch((error) =>
+      this.sessionService.setSyncState(session.id, {
+        sync_status: "sync_error",
+        control_state: session.control_state,
+        last_sync_error: (error as Error).message
+      })
+    );
     return this.messageStore.list(sessionId);
   }
 
@@ -120,6 +157,125 @@ export class CodexChatService {
     };
   }
 
+  async listCodexHistory(repoKey?: string | null): Promise<PublicCodexThreadHistoryItem[]> {
+    return this.collectCodexHistoryItems(repoKey);
+  }
+
+  async listCodexHistoryPage(
+    repoKey: string | null | undefined,
+    options: { limit: number; cursor?: string | null }
+  ): Promise<CursorPage<PublicCodexThreadHistoryItem>> {
+    const cursor = decodeCodexHistoryCursor(options.cursor);
+    const candidates = (await this.collectCodexHistoryItems(repoKey)).filter(
+      (thread) => !cursor || compareHistoryItemToCursor(thread, cursor) > 0
+    );
+    const pageItems = candidates.slice(0, options.limit + 1);
+    const hasMore = pageItems.length > options.limit;
+    const threads = pageItems.slice(0, options.limit);
+    const last = threads.at(-1);
+    return {
+      items: threads,
+      has_more: hasMore,
+      next_cursor: hasMore && last ? encodeCodexHistoryCursor(last) : null
+    };
+  }
+
+  private async collectCodexHistoryItems(repoKey?: string | null): Promise<PublicCodexThreadHistoryItem[]> {
+    if (!this.repoRegistry) {
+      return [];
+    }
+    const repos = repoKey ? [this.repoRegistry.getRepo(repoKey)] : this.repoRegistry.list();
+    const byThreadId = new Map<string, PublicCodexThreadHistoryItem>();
+
+    for (const repo of repos) {
+      const threads = await this.listCodexThreadRecords(repo, CODEX_HISTORY_SCAN_LIMIT).catch(() => []);
+      for (const thread of threads) {
+        const threadId = readString(thread, "id");
+        if (!threadId || readBoolean(thread, "ephemeral")) {
+          continue;
+        }
+        if (this.sessionService.findByCodexThreadId(threadId)) {
+          continue;
+        }
+        const item = this.toPublicCodexHistoryItem(repo, thread, threadId);
+        const existing = byThreadId.get(threadId);
+        if (!existing || compareNullableIso(item.updated_at ?? item.created_at, existing.updated_at ?? existing.created_at) > 0) {
+          byThreadId.set(threadId, item);
+        }
+      }
+    }
+
+    return [...byThreadId.values()].sort(compareCodexHistoryItems);
+  }
+
+  async openCodexHistoryThread(threadId: string, repoKey: string): Promise<CodexSession> {
+    if (!this.repoRegistry) {
+      throw badRequest("Codex history is not available");
+    }
+    if (this.activeTurns.size === 0) {
+      await this.appServerHost.preferDesktopConnection();
+    }
+    const repo = this.repoRegistry.getRepo(repoKey);
+    const threads = await this.listCodexThreadRecords(repo, 200);
+    const thread = threads.find((item) => readString(item, "id") === threadId && !readBoolean(item, "ephemeral"));
+    if (!thread) {
+      throw notFound("Codex thread not found for repo_key");
+    }
+
+    await this.sessionService.unforgetCodexThread(threadId);
+    const controlState = readThreadActive(thread) ? "desktop_active" : "idle";
+    const session = await this.sessionService.importCodexThread({
+      repo_key: repo.key,
+      title: readCodexThreadTitle(thread, repo.label),
+      codex_thread_id: threadId,
+      codex_thread_updated_at: isoFromUnixSeconds(readNumber(thread, "updatedAt")),
+      control_state: controlState,
+      created_at: isoFromUnixSeconds(readNumber(thread, "createdAt")),
+      restore: true
+    });
+
+    await this.syncSessionThread(session).catch((error) =>
+      this.sessionService.setSyncState(session.id, {
+        sync_status: "sync_error",
+        control_state: session.control_state,
+        last_sync_error: (error as Error).message
+      })
+    );
+    return this.sessionService.get(session.id);
+  }
+
+  async syncSessions(options: { importThreads?: boolean; readThreads?: boolean } = {}): Promise<void> {
+    if (options.readThreads === false && this.indexSyncInFlight) {
+      return this.indexSyncInFlight;
+    }
+    if (options.readThreads === false) {
+      this.indexSyncInFlight = this.runSyncSessions(options).finally(() => {
+        this.indexSyncInFlight = null;
+      });
+      return this.indexSyncInFlight;
+    }
+    return this.runSyncSessions(options);
+  }
+
+  private async runSyncSessions(options: { importThreads?: boolean; readThreads?: boolean }): Promise<void> {
+    if (options.importThreads) {
+      await this.importWhitelistedThreads();
+    }
+    if (options.readThreads === false) {
+      return;
+    }
+    const sessions = this.sessionService.list({ includeArchived: false });
+    for (const session of sessions) {
+      await this.syncSessionThread(session).catch((error) => {
+        void this.sessionService.setSyncState(session.id, {
+          sync_status: "sync_error",
+          control_state: session.control_state,
+          last_sync_error: (error as Error).message
+        });
+      });
+    }
+  }
+
   async sendMessage(
     session: CodexSession,
     promptInput: string,
@@ -130,9 +286,11 @@ export class CodexChatService {
     options: SendMessageOptions = {}
   ): Promise<{ messages: ChatMessage[] }> {
     const prompt = promptInput.trim();
-    const model = this.resolveModel(modelInput);
-    const effort = this.resolveReasoningEffort(effortInput);
-    const permissions = this.resolvePermissionMode(permissionModeInput);
+    const model = this.resolveModel(modelInput ?? session.run_profile?.model);
+    const effort = this.resolveReasoningEffort(effortInput ?? session.run_profile?.reasoning_effort);
+    const permissionMode = this.resolvePermissionModeId(permissionModeInput ?? session.run_profile?.permission_mode);
+    const planMode = options.planMode ?? session.run_profile?.plan_mode ?? false;
+    const permissions = this.resolvePermissionMode(permissionMode);
     const attachments = await this.resolveAttachments(session.id, attachmentIds);
     if (!prompt && !attachments.length) {
       throw badRequest("Message prompt or attachment is required");
@@ -140,9 +298,23 @@ export class CodexChatService {
     if (session.archived_at) {
       throw conflict("Archived sessions are read-only");
     }
+    if (this.activeTurns.size === 0) {
+      await this.appServerHost.preferDesktopConnection();
+    }
+    await this.syncSessionThread(session);
+    session = this.sessionService.get(session.id);
+    if (session.control_state === "desktop_active") {
+      throw conflict("Codex Desktop is running this thread. Agent Port is observing until the thread is idle.");
+    }
     if (this.activeTurns.has(session.id) || ["CREATED", "RUNNING", "WAITING_FOR_USER"].includes(session.task_status)) {
       throw conflict("Agent is still working in this chat");
     }
+    session = await this.sessionService.updateRunProfile(session.id, {
+      model,
+      reasoning_effort: effort,
+      permission_mode: permissionMode,
+      plan_mode: planMode
+    });
 
     const turnId = createId();
     const userMessage = await this.messageStore.create({
@@ -163,6 +335,12 @@ export class CodexChatService {
     this.broadcaster.broadcast(session.id, { type: "message_created", sessionId: session.id, message: userMessage });
     this.broadcaster.broadcast(session.id, { type: "message_created", sessionId: session.id, message: assistantMessage });
     await this.sessionService.setTaskState(session.id, "RUNNING", null);
+    await this.sessionService.setSyncState(session.id, {
+      sync_status: session.codex_thread_id ? "synced" : "local_only",
+      control_state: "mobile_control",
+      last_sync_error: null,
+      task_status: "RUNNING"
+    });
     this.broadcastSessionStatus(session.id);
 
     this.startCodexAppServerTurn(
@@ -173,7 +351,7 @@ export class CodexChatService {
       permissions,
       assistantMessage.id,
       attachments,
-      options.planMode === true
+      planMode
     );
 
     return { messages: [userMessage, assistantMessage] };
@@ -215,7 +393,7 @@ export class CodexChatService {
         answers: buildUserInputResponseAnswers(pending.questions, text)
       });
     } else if (active.threadId && active.turnId) {
-      await active.client.request("turn/steer", {
+      await this.appServerHost.request("turn/steer", {
         threadId: active.threadId,
         expectedTurnId: active.turnId,
         input: buildCodexInput(text, [])
@@ -233,11 +411,10 @@ export class CodexChatService {
       return;
     }
     if (active.threadId && active.turnId) {
-      await active.client
+      await this.appServerHost
         .request("turn/interrupt", { threadId: active.threadId, turnId: active.turnId })
         .catch(() => undefined);
     }
-    active.client.close();
     this.activeTurns.delete(sessionId);
     await this.messageStore.setStatus(sessionId, active.assistantMessageId, "error", "Interrupted");
     await this.sessionService.setTaskState(sessionId, "CANCELLED", null);
@@ -261,24 +438,7 @@ export class CodexChatService {
     attachments: AttachmentRecord[],
     planMode: boolean
   ): void {
-    const client = new CodexAppServerClient(
-      this.config.codex.command,
-      this.config.codex.defaultArgs,
-      (message) => {
-        void this.handleAppServerNotification(session.id, assistantMessageId, message);
-      },
-      (client, message) => {
-        void this.handleAppServerRequest(session.id, client, message);
-      },
-      (error) => {
-        const active = this.activeTurns.get(session.id);
-        if (active?.assistantMessageId === assistantMessageId) {
-          void this.failTurn(session.id, active, error.message);
-        }
-      }
-    );
     const active: ActiveTurn = {
-      client,
       assistantMessageId,
       threadId: session.codex_thread_id,
       turnId: null,
@@ -305,10 +465,9 @@ export class CodexChatService {
     active: ActiveTurn,
     planMode: boolean
   ): Promise<void> {
-    await active.client.initialize();
     let thread: { thread: { id: string } };
     if (active.threadId) {
-      thread = await active.client.request<{ thread: { id: string } }>("thread/resume", {
+      thread = await this.appServerHost.request<{ thread: { id: string } }>("thread/resume", {
         threadId: active.threadId,
         model,
         cwd: session.repo_path,
@@ -327,7 +486,7 @@ export class CodexChatService {
     active.threadId = thread.thread.id;
     await this.sessionService.setCodexThreadId(session.id, thread.thread.id);
 
-    const turn = await active.client.request<{ turn: { id: string } }>("turn/start", {
+    const turn = await this.appServerHost.request<{ turn: { id: string } }>("turn/start", {
       threadId: thread.thread.id,
       input: buildCodexInput(prompt, attachments, { planMode }),
       cwd: session.repo_path,
@@ -347,7 +506,7 @@ export class CodexChatService {
     model: string,
     permissions: CodexRuntimePermissions
   ): Promise<{ thread: { id: string } }> {
-    return active.client.request("thread/start", {
+    return this.appServerHost.request("thread/start", {
       model,
       cwd,
       approvalPolicy: permissions.approvalPolicy,
@@ -375,8 +534,17 @@ export class CodexChatService {
     return match.id;
   }
 
-  private resolvePermissionMode(modeInput: string | undefined): CodexRuntimePermissions {
+  private resolvePermissionModeId(modeInput: string | undefined): CodexPermissionMode {
     const mode = modeInput?.trim() || this.config.codex.defaultPermissionMode;
+    const match = this.config.codex.permissionModes.find((item) => item.id === mode);
+    if (!match) {
+      throw badRequest("Unsupported Codex permission mode");
+    }
+    return match.id;
+  }
+
+  private resolvePermissionMode(modeInput: string | undefined): CodexRuntimePermissions {
+    const mode = this.resolvePermissionModeId(modeInput);
     const match = this.config.codex.permissionModes.find((item) => item.id === mode);
     if (!match) {
       throw badRequest("Unsupported Codex permission mode");
@@ -396,6 +564,127 @@ export class CodexChatService {
       throw badRequest("Attachments are not available");
     }
     return this.attachmentService.resolveForMessage(sessionId, attachmentIds);
+  }
+
+  private async handleSharedAppServerNotification(message: AppServerMessage): Promise<void> {
+    const recipients = [...this.activeTurns.entries()].filter(([, active]) => this.shouldRouteSharedAppServerMessage(message, active));
+    if (recipients.length === 0) {
+      return;
+    }
+    for (const [sessionId, active] of recipients) {
+      if (active.finished) {
+        continue;
+      }
+      await this.handleAppServerNotification(sessionId, active.assistantMessageId, message);
+    }
+  }
+
+  private async handleSharedAppServerRequest(client: CodexAppServerConnection, message: AppServerMessage): Promise<boolean> {
+    for (const [sessionId, active] of this.activeTurns) {
+      if (this.shouldRouteSharedAppServerMessage(message, active)) {
+        await this.handleAppServerRequest(sessionId, client, message);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private async failActiveTurns(reason: string): Promise<void> {
+    const activeTurns = [...this.activeTurns.entries()];
+    for (const [sessionId, active] of activeTurns) {
+      await this.failTurn(sessionId, active, reason);
+    }
+  }
+
+  private async importWhitelistedThreads(): Promise<void> {
+    if (!this.repoRegistry) {
+      return;
+    }
+    const seenThreadIds = new Set<string>();
+    for (const repo of this.repoRegistry.list()) {
+      const threads = await this.listCodexThreadRecords(repo, 30).catch(() => []);
+      for (const thread of threads) {
+        const threadId = readString(thread, "id");
+        if (
+          !threadId ||
+          seenThreadIds.has(threadId) ||
+          readBoolean(thread, "ephemeral") ||
+          this.sessionService.isCodexThreadForgotten(threadId)
+        ) {
+          continue;
+        }
+        const controlState = readThreadActive(thread) ? "desktop_active" : "idle";
+        await this.sessionService.importCodexThread({
+          repo_key: repo.key,
+          title: readCodexThreadTitle(thread, repo.label),
+          codex_thread_id: threadId,
+          codex_thread_updated_at: isoFromUnixSeconds(readNumber(thread, "updatedAt")),
+          control_state: controlState,
+          created_at: isoFromUnixSeconds(readNumber(thread, "createdAt"))
+        });
+        seenThreadIds.add(threadId);
+      }
+    }
+  }
+
+  private async listCodexThreadRecords(repo: Repo, limit: number): Promise<JsonRecord[]> {
+    const response = await this.appServerHost.request<JsonRecord>("thread/list", {
+      cwd: repo.path,
+      archived: false,
+      limit,
+      sortKey: "updated_at",
+      sortDirection: "desc",
+      useStateDbOnly: false
+    });
+    return Array.isArray(response.data)
+      ? response.data.map(asRecord).filter((item): item is JsonRecord => Boolean(item))
+      : [];
+  }
+
+  private toPublicCodexHistoryItem(repo: Repo, thread: JsonRecord, threadId: string): PublicCodexThreadHistoryItem {
+    const importedSession = this.sessionService.findByCodexThreadId(threadId);
+    return {
+      id: threadId,
+      title: readCodexThreadTitle(thread, repo.label),
+      repo_key: repo.key,
+      repo_label: repo.label,
+      created_at: isoFromUnixSeconds(readNumber(thread, "createdAt")),
+      updated_at: isoFromUnixSeconds(readNumber(thread, "updatedAt")),
+      control_state: readThreadActive(thread) ? "desktop_active" : "idle",
+      imported_session_id: importedSession?.id ?? null,
+      forgotten: this.sessionService.isCodexThreadForgotten(threadId)
+    };
+  }
+
+  private async syncSessionThread(session: CodexSession): Promise<void> {
+    if (!session.codex_thread_id || this.activeTurns.has(session.id)) {
+      return;
+    }
+    const response = await this.appServerHost.request<{ thread: JsonRecord }>("thread/read", {
+      threadId: session.codex_thread_id,
+      includeTurns: true
+    });
+    const thread = asRecord(response.thread);
+    if (!thread) {
+      throw new Error("Codex thread response was empty");
+    }
+    const messages = projectCodexThreadToMessages(session.id, thread);
+    await this.messageStore.replaceSession(session.id, messages);
+    const controlState = readThreadActive(thread) ? "desktop_active" : "idle";
+    const current = this.sessionService.get(session.id);
+    const taskStatus =
+      controlState === "desktop_active"
+        ? "RUNNING"
+        : current.control_state === "desktop_active" && current.active_task_id === null
+          ? "IDLE"
+          : current.task_status;
+    await this.sessionService.setSyncState(session.id, {
+      sync_status: "synced",
+      control_state: controlState,
+      last_sync_error: null,
+      codex_thread_updated_at: isoFromUnixSeconds(readNumber(thread, "updatedAt")),
+      task_status: taskStatus
+    });
   }
 
   private async handleAppServerNotification(
@@ -475,7 +764,7 @@ export class CodexChatService {
       if (target?.target === "activity") {
         await this.messageStore.appendActivityContent(sessionId, assistantMessageId, target.activityId, delta);
         await this.broadcastMessageUpdate(sessionId, assistantMessageId);
-      } else {
+      } else if (target?.target === "assistant") {
         await this.messageStore.appendContent(sessionId, assistantMessageId, delta);
         this.broadcaster.broadcast(sessionId, {
           type: "message_delta",
@@ -494,8 +783,12 @@ export class CodexChatService {
 
     const finalText = extractFinalAgentTextFromCodexEvent(message);
     if (finalText && this.messageBelongsToActiveTurn(message, active)) {
-      await this.messageStore.setContent(sessionId, assistantMessageId, finalText);
-      await this.broadcastMessageUpdate(sessionId, assistantMessageId);
+      const itemId = extractItemIdFromAppServerMessage(message) ?? active.currentAgentMessageItemId;
+      const target = itemId ? active.itemTargets.get(itemId) : active.currentAgentMessageTarget;
+      if (target?.target === "assistant" || (!target && isAssistantAnswerItemMessage(message))) {
+        await this.messageStore.setContent(sessionId, assistantMessageId, finalText);
+        await this.broadcastMessageUpdate(sessionId, assistantMessageId);
+      }
       return;
     }
 
@@ -511,7 +804,7 @@ export class CodexChatService {
 
   private async handleAppServerRequest(
     sessionId: string,
-    client: CodexAppServerClient,
+    client: CodexAppServerConnection,
     message: AppServerMessage
   ): Promise<void> {
     const id = typeof message.id === "number" ? message.id : null;
@@ -531,12 +824,16 @@ export class CodexChatService {
       client.respond(id, { decision: "decline" });
       return;
     }
+    if (method === "item/permissions/requestApproval") {
+      client.respond(id, { decision: "decline" });
+      return;
+    }
     client.respond(id, { error: "Unsupported Agent Port app-server request" });
   }
 
   private async handleUserInputRequest(
     sessionId: string,
-    client: CodexAppServerClient,
+    client: CodexAppServerConnection,
     requestId: number,
     message: AppServerMessage
   ): Promise<void> {
@@ -739,10 +1036,25 @@ export class CodexChatService {
     return (!threadId || !active.threadId || threadId === active.threadId) && (!turnId || !active.turnId || turnId === active.turnId);
   }
 
+  private shouldRouteSharedAppServerMessage(message: AppServerMessage, active: ActiveTurn): boolean {
+    if (active.finished) {
+      return false;
+    }
+    const params = asRecord(message.params);
+    const threadId = readString(params ?? message, "threadId");
+    const turnId = readString(params ?? message, "turnId");
+    if (threadId) {
+      return active.threadId === threadId;
+    }
+    if (turnId) {
+      return active.turnId === turnId;
+    }
+    return this.activeTurns.size === 1;
+  }
+
   private async completeTurn(sessionId: string, active: ActiveTurn, message: AppServerMessage): Promise<void> {
     active.finished = true;
     this.activeTurns.delete(sessionId);
-    active.client.close();
     await this.messageStore.setTurnCompleted(sessionId, active.assistantMessageId, {
       completedAt: extractTurnCompletedAtIso(message),
       durationMs: extractTurnDurationMs(message)
@@ -751,6 +1063,7 @@ export class CodexChatService {
     await this.sessionService.setTaskState(sessionId, "COMPLETED", null);
     await this.broadcastMessageUpdate(sessionId, active.assistantMessageId);
     this.broadcastSessionStatus(sessionId);
+    void this.syncSessionThread(this.sessionService.get(sessionId)).catch(() => undefined);
   }
 
   private async failTurn(sessionId: string, active: ActiveTurn, reason: string): Promise<void> {
@@ -759,7 +1072,6 @@ export class CodexChatService {
     }
     active.finished = true;
     this.activeTurns.delete(sessionId);
-    active.client.close();
     await this.messageStore.setStatus(sessionId, active.assistantMessageId, "error", reason);
     await this.sessionService.setTaskState(sessionId, "FAILED", null);
     await this.broadcastMessageUpdate(sessionId, active.assistantMessageId);
@@ -962,6 +1274,75 @@ function formatPlanUpdate(message: AppServerMessage): string {
   return lines.join("\n");
 }
 
+function readThreadActive(thread: JsonRecord): boolean {
+  const status = asRecord(thread.status);
+  return readString(status, "type") === "active";
+}
+
+function readCodexThreadTitle(thread: JsonRecord, repoLabel: string): string {
+  return readString(thread, "name") ?? readString(thread, "preview") ?? `${repoLabel} Codex thread`;
+}
+
+interface CodexHistoryCursor {
+  sort_at: string;
+  repo_key: string;
+  id: string;
+}
+
+function compareCodexHistoryItems(a: PublicCodexThreadHistoryItem, b: PublicCodexThreadHistoryItem): number {
+  const timeCompare = compareNullableIso(historySortAt(b), historySortAt(a));
+  if (timeCompare !== 0) {
+    return timeCompare;
+  }
+  const repoCompare = a.repo_key.localeCompare(b.repo_key);
+  if (repoCompare !== 0) {
+    return repoCompare;
+  }
+  return b.id.localeCompare(a.id);
+}
+
+function compareHistoryItemToCursor(item: PublicCodexThreadHistoryItem, cursor: CodexHistoryCursor): number {
+  const timeCompare = compareNullableIso(cursor.sort_at, historySortAt(item));
+  if (timeCompare !== 0) {
+    return timeCompare;
+  }
+  const repoCompare = item.repo_key.localeCompare(cursor.repo_key);
+  if (repoCompare !== 0) {
+    return repoCompare;
+  }
+  return cursor.id.localeCompare(item.id);
+}
+
+function historySortAt(item: PublicCodexThreadHistoryItem): string {
+  return item.updated_at ?? item.created_at ?? "";
+}
+
+function encodeCodexHistoryCursor(item: PublicCodexThreadHistoryItem): string {
+  return encodePageCursor({ sort_at: historySortAt(item), repo_key: item.repo_key, id: item.id });
+}
+
+function decodeCodexHistoryCursor(value: string | null | undefined): CodexHistoryCursor | null {
+  const record = asCursorRecord(decodePageCursor(value));
+  if (!record) {
+    return null;
+  }
+  if (typeof record.sort_at !== "string" || typeof record.repo_key !== "string" || typeof record.id !== "string") {
+    throw badRequest("Invalid Codex history cursor");
+  }
+  return { sort_at: record.sort_at, repo_key: record.repo_key, id: record.id };
+}
+
+function compareNullableIso(a: string | null, b: string | null): number {
+  return (a ?? "").localeCompare(b ?? "");
+}
+
+function isoFromUnixSeconds(value: number | null): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  return new Date(value * 1000).toISOString();
+}
+
 function asRecord(value: unknown): JsonRecord | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : null;
 }
@@ -996,6 +1377,18 @@ function extractItemFromAppServerMessage(message: AppServerMessage): JsonRecord 
 function extractItemIdFromAppServerMessage(message: AppServerMessage): string | null {
   const params = asRecord(message.params);
   return readString(params, "itemId") ?? readString(extractItemFromAppServerMessage(message), "id");
+}
+
+function isAssistantAnswerItemMessage(message: AppServerMessage): boolean {
+  const item = extractItemFromAppServerMessage(message);
+  if (!item) {
+    return false;
+  }
+  const itemType = readString(item, "type");
+  if (itemType === "agentMessage" || itemType === "agent_message") {
+    return readString(item, "phase") !== "commentary";
+  }
+  return readString(item, "role") === "assistant";
 }
 
 function extractTurnIdFromAppServerMessage(message: AppServerMessage): string | null {

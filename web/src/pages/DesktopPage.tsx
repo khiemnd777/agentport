@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import AppShell, { type MobileTab } from "../components/layout/AppShell";
 import ChatWorkspace from "../components/chat/ChatWorkspace";
 import InspectorPanel, { type InspectorTab } from "../components/layout/InspectorPanel";
-import Sidebar from "../components/layout/Sidebar";
+import Sidebar, { type SessionSidebarView } from "../components/layout/Sidebar";
 import TopBar from "../components/layout/TopBar";
 import CodexTerminal from "../components/terminal/CodexTerminal";
 import GitStatusPanel from "../components/git/GitStatusPanel";
@@ -13,6 +13,7 @@ import {
   chatSocketUrl,
   type ChatMessage,
   type ChatSocketEvent,
+  type CodexHistoryThread,
   type CodexSession,
   type CodexPermissionMode,
   type CodexReasoningEffort,
@@ -33,9 +34,25 @@ import {
   resolveRepoFolder,
   setDefaultRepo as setDefaultRepoRequest
 } from "../api/reposApi";
-import { archiveSession, closeSession, createSession, deleteSession, listSessions } from "../api/sessionsApi";
+import {
+  archiveSession,
+  closeSession,
+  createSession,
+  deleteSession,
+  getSession,
+  listSessions,
+  updateSessionRunProfile
+} from "../api/sessionsApi";
 import { getGitDiff, getGitStatus } from "../api/gitApi";
-import { interruptChat, listChatMessages, listCodexModels, sendChatMessage, submitChatUserInput } from "../api/chatApi";
+import {
+  interruptChat,
+  listChatMessages,
+  listCodexHistory,
+  listCodexModels,
+  openCodexHistoryThread,
+  sendChatMessage,
+  submitChatUserInput
+} from "../api/chatApi";
 import type { DisplayMode } from "../theme";
 
 interface Props {
@@ -49,6 +66,14 @@ const CODEX_REASONING_EFFORT_STORAGE_KEY = "remote-codex-reasoning-effort";
 const CODEX_PERMISSION_MODE_STORAGE_KEY = "remote-codex-permission-mode";
 const CODEX_PLAN_MODE_STORAGE_KEY = "remote-codex-plan-mode";
 const ACTIVE_SESSION_STORAGE_KEY = "agent-port-active-session-id";
+const SESSION_PAGE_LIMIT = 30;
+
+interface SessionViewPaging {
+  nextCursor: string | null;
+  hasMore: boolean;
+  loaded: boolean;
+  loadingMore: boolean;
+}
 
 export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout }: Props) {
   const [repos, setRepos] = useState<PublicRepo[]>([]);
@@ -68,6 +93,7 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
   const [planMode, setPlanMode] = useState(() => window.localStorage.getItem(CODEX_PLAN_MODE_STORAGE_KEY) === "true");
   const [selectedRepoKey, setSelectedRepoKey] = useState<string | null>(null);
   const [sessions, setSessions] = useState<CodexSession[]>([]);
+  const [codexHistoryThreads, setCodexHistoryThreads] = useState<CodexHistoryThread[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(
     () => window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY)
   );
@@ -80,7 +106,11 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
   const [mobileTab, setMobileTab] = useState<MobileTab>("console");
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("console");
   const [error, setError] = useState<string | null>(null);
-  const [showHistory, setShowHistory] = useState(false);
+  const [sessionView, setSessionView] = useState<SessionSidebarView>("active");
+  const [sessionViewPaging, setSessionViewPaging] = useState<Record<SessionSidebarView, SessionViewPaging>>(
+    createInitialSessionViewPaging
+  );
+  const [selectedArchiveSessionIds, setSelectedArchiveSessionIds] = useState<Set<string>>(() => new Set());
   const [defaultRepoKey, setDefaultRepoKey] = useState("");
   const [repoDiscovery, setRepoDiscovery] = useState<RepoDiscoveryStatus | null>(null);
   const [repoSettingsOpen, setRepoSettingsOpen] = useState(false);
@@ -91,12 +121,25 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
     [repos, selectedRepoKey]
   );
   const sessionsForRepo = useMemo(
-    () => sessions.filter((session) => !selectedRepoKey || session.repo_key === selectedRepoKey),
-    [sessions, selectedRepoKey]
+    () =>
+      sessions.filter((session) => {
+        if (selectedRepoKey && session.repo_key !== selectedRepoKey) {
+          return false;
+        }
+        if (sessionView === "archive") {
+          return Boolean(session.archived_at);
+        }
+        return !session.archived_at;
+      }),
+    [sessions, selectedRepoKey, sessionView]
   );
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) ?? null,
     [sessions, activeSessionId]
+  );
+  const selectedVisibleArchiveSessionIds = useMemo(
+    () => sessionsForRepo.filter((session) => selectedArchiveSessionIds.has(session.id)).map((session) => session.id),
+    [sessionsForRepo, selectedArchiveSessionIds]
   );
 
   const refreshRepos = useCallback(async () => {
@@ -111,15 +154,49 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
     );
   }, []);
 
+  const loadSessionViewPage = useCallback(
+    async (
+      view: SessionSidebarView,
+      options: { cursor?: string | null; replace?: boolean } = {}
+    ) => {
+      const cursor = options.cursor ?? null;
+      if (view === "history") {
+        const result = await listCodexHistory(selectedRepoKey, { limit: SESSION_PAGE_LIMIT, cursor });
+        setCodexHistoryThreads((current) =>
+          options.replace ? result.threads : upsertCodexHistoryThreads(current, result.threads)
+        );
+        setSessionViewPaging((current) => ({
+          ...current,
+          history: mergeSessionViewPaging(current.history, result, !cursor && !options.replace)
+        }));
+        return result.threads;
+      }
+
+      const result = await listSessions({
+        view: view === "archive" ? "archived" : "active",
+        limit: SESSION_PAGE_LIMIT,
+        cursor
+      });
+      setSessions((current) =>
+        options.replace
+          ? replaceSessionsForView(current, view, result.sessions)
+          : upsertSessions(current, result.sessions)
+      );
+      setSessionViewPaging((current) => ({
+        ...current,
+        [view]: mergeSessionViewPaging(current[view], result, !cursor && !options.replace)
+      }));
+      if (view === "active") {
+        setActiveSessionId((current) => current ?? result.sessions[0]?.id ?? null);
+      }
+      return result.sessions;
+    },
+    [selectedRepoKey]
+  );
+
   const refreshSessions = useCallback(async () => {
-    const result = await listSessions({ includeArchived: showHistory });
-    setSessions(result.sessions);
-    setActiveSessionId((current) =>
-      current && result.sessions.some((session) => session.id === current)
-        ? current
-        : result.sessions[0]?.id ?? null
-    );
-  }, [showHistory]);
+    await loadSessionViewPage(sessionView);
+  }, [loadSessionViewPage, sessionView]);
 
   const refreshMessages = useCallback(async (sessionId: string | null) => {
     if (!sessionId) {
@@ -127,7 +204,7 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
       return;
     }
     const result = await listChatMessages(sessionId);
-    setChatMessages((current) => upsertMessages(current.filter((message) => message.session_id === sessionId), result.messages));
+    setChatMessages(result.messages);
   }, []);
 
   const refreshGit = useCallback(
@@ -173,16 +250,34 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
       try {
         const [repoResult, sessionResult] = await Promise.all([
           getRepos(),
-          listSessions({ includeArchived: false })
+          listSessions({ view: "active", limit: SESSION_PAGE_LIMIT })
         ]);
         const storedActiveSessionId = window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
-        const storedActiveSession = sessionResult.sessions.find((session) => session.id === storedActiveSessionId);
+        let initialSessions = sessionResult.sessions;
+        let storedActiveSession = initialSessions.find((session) => session.id === storedActiveSessionId);
+        if (storedActiveSessionId && !storedActiveSession) {
+          storedActiveSession = await getSession(storedActiveSessionId)
+            .then((result) => (result.session.archived_at ? undefined : result.session))
+            .catch(() => undefined);
+          if (storedActiveSession) {
+            initialSessions = upsertSessions(initialSessions, [storedActiveSession]);
+          }
+        }
         setRepos(repoResult.repos);
         setDefaultRepoKey(repoResult.defaultRepo);
         setRepoDiscovery(repoResult.repoDiscovery);
         setSelectedRepoKey(storedActiveSession?.repo_key ?? repoResult.defaultRepo);
-        setSessions(sessionResult.sessions);
-        setActiveSessionId(storedActiveSession?.id ?? sessionResult.sessions[0]?.id ?? null);
+        setSessions(initialSessions);
+        setSessionViewPaging((current) => ({
+          ...current,
+          active: {
+            ...current.active,
+            loaded: true,
+            hasMore: sessionResult.has_more,
+            nextCursor: sessionResult.next_cursor
+          }
+        }));
+        setActiveSessionId(storedActiveSession?.id ?? initialSessions[0]?.id ?? null);
       } catch (err) {
         setError((err as Error).message);
       } finally {
@@ -199,6 +294,29 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
     }
     window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
   }, [activeSessionId]);
+
+  useEffect(() => {
+    if (sessionView !== "archive") {
+      setSelectedArchiveSessionIds((current) => (current.size === 0 ? current : new Set()));
+      return;
+    }
+    const visibleIds = new Set(sessionsForRepo.map((session) => session.id));
+    setSelectedArchiveSessionIds((current) => {
+      const next = new Set([...current].filter((sessionId) => visibleIds.has(sessionId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [sessionView, sessionsForRepo]);
+
+  useEffect(() => {
+    if (sessionView === "history") {
+      setCodexHistoryThreads([]);
+      setSessionViewPaging((current) => ({
+        ...current,
+        history: createEmptySessionViewPaging()
+      }));
+      void loadSessionViewPage("history", { replace: true }).catch((err) => setError((err as Error).message));
+    }
+  }, [loadSessionViewPage, sessionView, selectedRepoKey]);
 
   useEffect(() => {
     async function loadModels() {
@@ -235,6 +353,35 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
     }
     void loadModels();
   }, []);
+
+  useEffect(() => {
+    const profile = activeSession?.run_profile;
+    if (!profile) {
+      return;
+    }
+    setSelectedModel((current) => {
+      const next = normalizeSelectedModel(profile.model, codexModels, defaultModel);
+      return current === next ? current : next;
+    });
+    setSelectedReasoningEffort((current) => {
+      const next = normalizeSelectedReasoningEffort(profile.reasoning_effort, codexReasoningEfforts, defaultReasoningEffort);
+      return current === next ? current : next;
+    });
+    setSelectedPermissionMode((current) => {
+      const next = normalizeSelectedPermissionMode(profile.permission_mode, codexPermissionModes, defaultPermissionMode);
+      return current === next ? current : next;
+    });
+    setPlanMode(profile.plan_mode);
+  }, [
+    activeSession?.id,
+    activeSession?.run_profile?.updated_at,
+    codexModels,
+    codexPermissionModes,
+    codexReasoningEfforts,
+    defaultModel,
+    defaultPermissionMode,
+    defaultReasoningEffort
+  ]);
 
   useEffect(() => {
     void refreshMessages(activeSessionId);
@@ -354,7 +501,18 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
         repo_key: selectedRepoKey,
         title: `${selectedRepo?.label ?? selectedRepoKey} remote session`
       });
-      await refreshSessions();
+      setSessionView("active");
+      const activeResult = await listSessions({ view: "active", limit: SESSION_PAGE_LIMIT });
+      setSessions((current) => upsertSessions(current, activeResult.sessions));
+      setSessionViewPaging((current) => ({
+        ...current,
+        active: {
+          ...current.active,
+          loaded: true,
+          hasMore: activeResult.has_more,
+          nextCursor: activeResult.next_cursor
+        }
+      }));
       setActiveSessionId(result.session.id);
       setMobileTab("chat");
     } catch (err) {
@@ -373,7 +531,8 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
   async function handleArchiveSession(sessionId: string) {
     setError(null);
     try {
-      await archiveSession(sessionId);
+      const result = await archiveSession(sessionId);
+      setSessions((current) => upsertSessions(current, [result.session]));
       await refreshSessions();
     } catch (err) {
       setError((err as Error).message);
@@ -391,6 +550,15 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
     setError(null);
     try {
       await deleteSession(sessionId);
+      setSessions((current) => current.filter((session) => session.id !== sessionId));
+      setSelectedArchiveSessionIds((current) => {
+        if (!current.has(sessionId)) {
+          return current;
+        }
+        const next = new Set(current);
+        next.delete(sessionId);
+        return next;
+      });
       if (activeSessionId === sessionId) {
         setActiveSessionId(null);
       }
@@ -400,18 +568,16 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
     }
   }
 
-  async function handleToggleHistory(nextShowHistory: boolean) {
-    setShowHistory(nextShowHistory);
-    setRefreshing(true);
+  async function handleSessionViewChange(nextView: SessionSidebarView) {
+    setSessionView(nextView);
+    setSelectedArchiveSessionIds(new Set());
     setError(null);
+    if (nextView === "history" || sessionViewPaging[nextView].loaded) {
+      return;
+    }
+    setRefreshing(true);
     try {
-      const result = await listSessions({ includeArchived: nextShowHistory });
-      setSessions(result.sessions);
-      setActiveSessionId((current) =>
-        current && result.sessions.some((session) => session.id === current)
-          ? current
-          : result.sessions[0]?.id ?? null
-      );
+      await loadSessionViewPage(nextView);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -419,29 +585,139 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
     }
   }
 
+  async function handleLoadMoreSessions() {
+    const view = sessionView;
+    const paging = sessionViewPaging[view];
+    if (refreshing || paging.loadingMore || !paging.hasMore || !paging.nextCursor) {
+      return;
+    }
+    setSessionViewPaging((current) => ({
+      ...current,
+      [view]: {
+        ...current[view],
+        loadingMore: true
+      }
+    }));
+    setError(null);
+    try {
+      await loadSessionViewPage(view, { cursor: paging.nextCursor });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSessionViewPaging((current) => ({
+        ...current,
+        [view]: {
+          ...current[view],
+          loadingMore: false
+        }
+      }));
+    }
+  }
+
+  function handleToggleArchiveSessionSelection(sessionId: string, selected: boolean) {
+    setSelectedArchiveSessionIds((current) => {
+      const next = new Set(current);
+      if (selected) {
+        next.add(sessionId);
+      } else {
+        next.delete(sessionId);
+      }
+      return next;
+    });
+  }
+
+  function handleToggleAllArchiveSessions(selected: boolean) {
+    setSelectedArchiveSessionIds(selected ? new Set(sessionsForRepo.map((session) => session.id)) : new Set());
+  }
+
+  async function handleDeleteSelectedArchiveSessions() {
+    if (selectedVisibleArchiveSessionIds.length === 0) {
+      return;
+    }
+    const confirmed = window.confirm(
+      `Delete ${selectedVisibleArchiveSessionIds.length} archived sessions?\n\nThis removes Agent Port local session metadata, logs, events, and cached messages.\nSynced Codex Desktop threads are forgotten locally, not deleted from Codex Desktop.`
+    );
+    if (!confirmed) {
+      return;
+    }
+    setError(null);
+    const results = await Promise.allSettled(
+      selectedVisibleArchiveSessionIds.map(async (sessionId) => {
+        await deleteSession(sessionId);
+        return sessionId;
+      })
+    );
+    const deletedIds = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+    const failedCount = results.length - deletedIds.length;
+    const deletedIdSet = new Set(deletedIds);
+    setSessions((current) => current.filter((session) => !deletedIdSet.has(session.id)));
+    setSelectedArchiveSessionIds((current) => new Set([...current].filter((sessionId) => !deletedIdSet.has(sessionId))));
+    if (activeSessionId && deletedIdSet.has(activeSessionId)) {
+      setActiveSessionId(null);
+    }
+    await refreshSessions();
+    if (failedCount > 0) {
+      setError(`${failedCount} archived sessions could not be deleted.`);
+    }
+  }
+
+  async function handleOpenCodexHistoryThread(thread: CodexHistoryThread) {
+    setRefreshing(true);
+    setError(null);
+    try {
+      const result = await openCodexHistoryThread(thread.id, thread.repo_key);
+      setSelectedRepoKey(thread.repo_key);
+      setSessionView("active");
+      setSessions((current) => upsertSessions(current, [result.session]));
+      setCodexHistoryThreads((current) =>
+        current.filter((item) => item.id !== thread.id || item.repo_key !== thread.repo_key)
+      );
+      setActiveSessionId(result.session.id);
+      setMobileTab("chat");
+      await refreshMessages(result.session.id);
+      const activeResult = await listSessions({ view: "active", limit: SESSION_PAGE_LIMIT });
+      setSessions((current) => upsertSessions(current, activeResult.sessions));
+      setSessionViewPaging((current) => ({
+        ...current,
+        active: {
+          ...current.active,
+          loaded: true,
+          hasMore: activeResult.has_more,
+          nextCursor: activeResult.next_cursor
+        }
+      }));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  const composerModel = normalizeSelectedModel(activeSession?.run_profile?.model ?? selectedModel, codexModels, defaultModel);
+  const composerReasoningEffort = normalizeSelectedReasoningEffort(
+    activeSession?.run_profile?.reasoning_effort ?? selectedReasoningEffort,
+    codexReasoningEfforts,
+    defaultReasoningEffort
+  );
+  const composerPermissionMode = normalizeSelectedPermissionMode(
+    activeSession?.run_profile?.permission_mode ?? selectedPermissionMode,
+    codexPermissionModes,
+    defaultPermissionMode
+  );
+  const composerPlanMode = activeSession?.run_profile?.plan_mode ?? planMode;
+
   async function handleSendChatMessage(prompt: string, attachmentIds: string[]) {
     if (!activeSession) {
       return;
     }
-    const model = normalizeSelectedModel(selectedModel, codexModels, defaultModel);
-    const reasoningEffort = normalizeSelectedReasoningEffort(
-      selectedReasoningEffort,
-      codexReasoningEfforts,
-      defaultReasoningEffort
-    );
-    const permissionMode = normalizeSelectedPermissionMode(
-      selectedPermissionMode,
-      codexPermissionModes,
-      defaultPermissionMode
-    );
     const result = await sendChatMessage(
       activeSession.id,
       prompt,
-      model,
-      reasoningEffort,
-      permissionMode,
+      composerModel,
+      composerReasoningEffort,
+      composerPermissionMode,
       attachmentIds,
-      planMode
+      composerPlanMode
     );
     setChatMessages((current) => upsertMessages(current, result.messages));
     await refreshSessions();
@@ -456,27 +732,93 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
     await refreshSessions();
   }
 
+  async function persistRunProfile(input: {
+    model?: string;
+    reasoning_effort?: CodexReasoningEffort;
+    permission_mode?: CodexPermissionMode;
+    plan_mode?: boolean;
+  }) {
+    if (!activeSession || !composerReasoningEffort || !composerPermissionMode) {
+      return;
+    }
+    setError(null);
+    try {
+      const result = await updateSessionRunProfile(activeSession.id, input);
+      setSessions((current) => upsertSessions(current, [result.session]));
+    } catch (err) {
+      setError((err as Error).message);
+      void refreshSessions();
+    }
+  }
+
+  function applyRunProfileLocally(input: {
+    model?: string;
+    reasoning_effort?: CodexReasoningEffort;
+    permission_mode?: CodexPermissionMode;
+    plan_mode?: boolean;
+  }) {
+    if (!activeSession || !composerReasoningEffort || !composerPermissionMode) {
+      return;
+    }
+    const reasoningEffort = composerReasoningEffort;
+    const permissionMode = composerPermissionMode;
+    setSessions((current) =>
+      upsertSessions(current, [
+        {
+          ...activeSession,
+          run_profile: {
+            model: input.model ?? composerModel,
+            reasoning_effort: input.reasoning_effort ?? reasoningEffort,
+            permission_mode: input.permission_mode ?? permissionMode,
+            plan_mode: input.plan_mode ?? composerPlanMode,
+            updated_at: new Date().toISOString()
+          }
+        }
+      ])
+    );
+  }
+
   function handleSelectedModelChange(model: string) {
     const next = normalizeSelectedModel(model, codexModels, defaultModel);
     setSelectedModel(next);
-    window.localStorage.setItem(CODEX_MODEL_STORAGE_KEY, next);
+    if (activeSession) {
+      applyRunProfileLocally({ model: next });
+      void persistRunProfile({ model: next });
+    } else {
+      window.localStorage.setItem(CODEX_MODEL_STORAGE_KEY, next);
+    }
   }
 
   function handleSelectedReasoningEffortChange(reasoningEffort: CodexReasoningEffort) {
     const next = normalizeSelectedReasoningEffort(reasoningEffort, codexReasoningEfforts, defaultReasoningEffort);
     setSelectedReasoningEffort(next);
-    window.localStorage.setItem(CODEX_REASONING_EFFORT_STORAGE_KEY, next);
+    if (activeSession && next) {
+      applyRunProfileLocally({ reasoning_effort: next });
+      void persistRunProfile({ reasoning_effort: next });
+    } else {
+      window.localStorage.setItem(CODEX_REASONING_EFFORT_STORAGE_KEY, next);
+    }
   }
 
   function handleSelectedPermissionModeChange(permissionMode: CodexPermissionMode) {
     const next = normalizeSelectedPermissionMode(permissionMode, codexPermissionModes, defaultPermissionMode);
     setSelectedPermissionMode(next);
-    window.localStorage.setItem(CODEX_PERMISSION_MODE_STORAGE_KEY, next);
+    if (activeSession && next) {
+      applyRunProfileLocally({ permission_mode: next });
+      void persistRunProfile({ permission_mode: next });
+    } else {
+      window.localStorage.setItem(CODEX_PERMISSION_MODE_STORAGE_KEY, next);
+    }
   }
 
   function handlePlanModeChange(enabled: boolean) {
     setPlanMode(enabled);
-    window.localStorage.setItem(CODEX_PLAN_MODE_STORAGE_KEY, enabled ? "true" : "false");
+    if (activeSession) {
+      applyRunProfileLocally({ plan_mode: enabled });
+      void persistRunProfile({ plan_mode: enabled });
+    } else {
+      window.localStorage.setItem(CODEX_PLAN_MODE_STORAGE_KEY, enabled ? "true" : "false");
+    }
   }
 
   async function handleStopChatTurn() {
@@ -535,6 +877,7 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
   }
 
   const chatTurnBusy = ["CREATED", "RUNNING", "WAITING_FOR_USER"].includes(activeSession?.task_status ?? "IDLE");
+  const currentSessionViewPaging = sessionViewPaging[sessionView];
 
   const consoleVisible =
     (isMobileLayout && mobileTab === "console") || (!isMobileLayout && inspectorTab === "console");
@@ -559,20 +902,12 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
       messages={chatMessages}
       turnBusy={chatTurnBusy}
       models={codexModels}
-      selectedModel={normalizeSelectedModel(selectedModel, codexModels, defaultModel)}
+      selectedModel={composerModel}
       reasoningEfforts={codexReasoningEfforts}
-      selectedReasoningEffort={normalizeSelectedReasoningEffort(
-        selectedReasoningEffort,
-        codexReasoningEfforts,
-        defaultReasoningEffort
-      )}
+      selectedReasoningEffort={composerReasoningEffort}
       permissionModes={codexPermissionModes}
-      selectedPermissionMode={normalizeSelectedPermissionMode(
-        selectedPermissionMode,
-        codexPermissionModes,
-        defaultPermissionMode
-      )}
-      planMode={planMode}
+      selectedPermissionMode={composerPermissionMode}
+      planMode={composerPlanMode}
       onSelectedModelChange={handleSelectedModelChange}
       onSelectedReasoningEffortChange={handleSelectedReasoningEffortChange}
       onSelectedPermissionModeChange={handleSelectedPermissionModeChange}
@@ -618,8 +953,12 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
             repos={repos}
             selectedRepoKey={selectedRepoKey}
             sessions={sessionsForRepo}
+            codexHistoryThreads={codexHistoryThreads}
             activeSessionId={activeSessionId}
-            showHistory={showHistory}
+            view={sessionView}
+            selectedArchiveSessionIds={selectedArchiveSessionIds}
+            hasMore={currentSessionViewPaging.loaded && currentSessionViewPaging.hasMore}
+            loadingMore={currentSessionViewPaging.loadingMore}
             onSelectRepo={setSelectedRepoKey}
             onManageRepos={() => setRepoSettingsOpen(true)}
             onSelectSession={(sessionId) => {
@@ -627,9 +966,14 @@ export default function DesktopPage({ displayMode, onDisplayModeChange, onLogout
               setMobileTab("chat");
             }}
             onCreateSession={() => void handleCreateSession()}
-            onToggleHistory={(nextShowHistory) => void handleToggleHistory(nextShowHistory)}
+            onViewChange={(nextView) => void handleSessionViewChange(nextView)}
+            onToggleArchiveSessionSelection={handleToggleArchiveSessionSelection}
+            onToggleAllArchiveSessions={handleToggleAllArchiveSessions}
+            onOpenCodexHistoryThread={(thread) => void handleOpenCodexHistoryThread(thread)}
             onArchiveSession={(sessionId) => void handleArchiveSession(sessionId)}
             onDeleteSession={(sessionId) => void handleDeleteSession(sessionId)}
+            onDeleteSelectedArchiveSessions={() => void handleDeleteSelectedArchiveSessions()}
+            onLoadMore={() => void handleLoadMoreSessions()}
           />
         }
         chat={chatPanel}
@@ -693,7 +1037,78 @@ function upsertSessions(current: CodexSession[], incoming: CodexSession[]): Code
   for (const session of incoming) {
     byId.set(session.id, session);
   }
-  return [...byId.values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  return [...byId.values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id.localeCompare(a.id));
+}
+
+function replaceSessionsForView(
+  current: CodexSession[],
+  view: Exclude<SessionSidebarView, "history">,
+  incoming: CodexSession[]
+): CodexSession[] {
+  const nextViewIsArchived = view === "archive";
+  return upsertSessions(
+    current.filter((session) => Boolean(session.archived_at) !== nextViewIsArchived),
+    incoming
+  );
+}
+
+function upsertCodexHistoryThreads(
+  current: CodexHistoryThread[],
+  incoming: CodexHistoryThread[]
+): CodexHistoryThread[] {
+  const byKey = new Map(current.map((thread) => [`${thread.repo_key}:${thread.id}`, thread]));
+  for (const thread of incoming) {
+    byKey.set(`${thread.repo_key}:${thread.id}`, thread);
+  }
+  return [...byKey.values()].sort(compareCodexHistoryThreads);
+}
+
+function compareCodexHistoryThreads(a: CodexHistoryThread, b: CodexHistoryThread): number {
+  const timeCompare = historySortAt(b).localeCompare(historySortAt(a));
+  if (timeCompare !== 0) {
+    return timeCompare;
+  }
+  const repoCompare = a.repo_key.localeCompare(b.repo_key);
+  return repoCompare || b.id.localeCompare(a.id);
+}
+
+function historySortAt(thread: CodexHistoryThread): string {
+  return thread.updated_at ?? thread.created_at ?? "";
+}
+
+function createInitialSessionViewPaging(): Record<SessionSidebarView, SessionViewPaging> {
+  return {
+    active: createEmptySessionViewPaging(),
+    archive: createEmptySessionViewPaging(),
+    history: createEmptySessionViewPaging()
+  };
+}
+
+function createEmptySessionViewPaging(): SessionViewPaging {
+  return {
+    nextCursor: null,
+    hasMore: true,
+    loaded: false,
+    loadingMore: false
+  };
+}
+
+function mergeSessionViewPaging(
+  current: SessionViewPaging,
+  result: { next_cursor: string | null; has_more: boolean },
+  keepLoadedCursor: boolean
+): SessionViewPaging {
+  const hasMore = keepLoadedCursor && current.loaded && !current.hasMore ? false : result.has_more;
+  return {
+    ...current,
+    loaded: true,
+    hasMore,
+    nextCursor: hasMore
+      ? keepLoadedCursor && current.loaded
+        ? current.nextCursor ?? result.next_cursor
+        : result.next_cursor
+      : null
+  };
 }
 
 function normalizeSelectedModel(modelsValue: string, models: PublicCodexModel[], defaultModel: string): string {

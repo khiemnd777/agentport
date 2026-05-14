@@ -1,6 +1,16 @@
-export type SessionSource = "iphone_web" | "desktop_web" | "local_cli" | "automation";
+export type SessionSource = "iphone_web" | "desktop_web" | "codex_desktop" | "local_cli" | "automation";
 
 export type ControlMode = "web_managed" | "local_terminal" | "non_interactive";
+export type SyncStatus = "local_only" | "synced" | "syncing" | "sync_error";
+export type ControlState = "idle" | "mobile_control" | "desktop_active" | "observing";
+
+export interface CodexRunProfile {
+  model: string;
+  reasoning_effort: import("../config").CodexReasoningEffort;
+  permission_mode: import("../config").CodexPermissionMode;
+  plan_mode: boolean;
+  updated_at: string;
+}
 
 export type TerminalStatus =
   | "DISCONNECTED"
@@ -43,6 +53,12 @@ export interface CodexSession {
   task_status: import("./taskTypes").TaskStatus;
   active_task_id: string | null;
   codex_thread_id: string | null;
+  sync_status: SyncStatus;
+  control_state: ControlState;
+  last_synced_at: string | null;
+  last_sync_error: string | null;
+  codex_thread_updated_at: string | null;
+  run_profile: CodexRunProfile;
   waiting_user_input: WaitingUserInput | null;
   created_at: string;
   updated_at: string;

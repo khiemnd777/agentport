@@ -36,8 +36,7 @@ import type {
 import { chatAttachmentContentUrl, uploadChatAttachment } from "../../api/chatApi";
 import { getSessionFileContent } from "../../api/filesApi";
 import FilePreviewPanel, { type FilePreviewState } from "../files/FilePreviewPanel";
-import SessionStatusBadge from "../sessions/SessionStatusBadge";
-import TaskStatusBadge from "../tasks/TaskStatusBadge";
+import SessionStatusBadges from "../sessions/SessionStatusBadges";
 import MarkdownContent, { type MarkdownFileLink } from "./MarkdownContent";
 
 interface Props {
@@ -107,8 +106,10 @@ export default function ChatWorkspace({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
   const waitingForUser = activeSession?.task_status === "WAITING_FOR_USER";
+  const desktopActive = activeSession?.control_state === "desktop_active";
+  const mobileControl = activeSession?.control_state === "mobile_control";
   const codexWorking = turnBusy && !waitingForUser;
-  const composerDisabled = submitting || !activeSession || Boolean(activeSession?.archived_at);
+  const composerDisabled = submitting || !activeSession || Boolean(activeSession?.archived_at) || desktopActive;
   const uploadedAttachmentIds = useMemo(
     () =>
       composerAttachments
@@ -124,6 +125,7 @@ export default function ChatWorkspace({
   const hasSendableContent = Boolean(draft.trim()) || uploadedAttachmentIds.length > 0;
   const attachmentControlsDisabled = composerDisabled || turnBusy;
   const planModeDisabled = composerDisabled || turnBusy;
+  const canStopTurn = turnBusy && mobileControl;
   const sendDisabled =
     composerDisabled || turnBusy || hasAttachmentUploadPending || hasAttachmentErrors || !hasSendableContent;
 
@@ -348,6 +350,9 @@ export default function ChatWorkspace({
     if (waitingForUser) {
       return "Codex is waiting for confirmation...";
     }
+    if (desktopActive) {
+      return "Codex Desktop is running this thread. Agent Port is observing.";
+    }
     if (codexWorking) {
       return "Codex is working...";
     }
@@ -373,10 +378,7 @@ export default function ChatWorkspace({
         </div>
         <div className="chat-header-actions">
           {activeSession ? (
-            <>
-              <SessionStatusBadge status={activeSession.terminal_status} />
-              <TaskStatusBadge status={activeSession.task_status} />
-            </>
+            <SessionStatusBadges session={activeSession} />
           ) : null}
           <button className="icon-button" type="button" onClick={onOpenConsole} title="Open console">
             <TerminalSquare size={17} />
@@ -390,9 +392,17 @@ export default function ChatWorkspace({
         <div className="chat-system-note">
           <MessageSquare size={17} />
           <span>
-            This browser chat controls a separate local Codex CLI session. It does not share context with this Codex Desktop conversation.
+            {activeSession?.codex_thread_id
+              ? "This chat is synced with the Codex thread store. Codex Desktop and Agent Port can continue the same thread when it is idle."
+              : "This browser chat will create a synced Codex thread when you send the first message."}
           </span>
         </div>
+        {activeSession?.last_sync_error ? (
+          <div className="chat-sync-warning">
+            <AlertCircle size={16} />
+            <span>Codex thread sync failed: {activeSession.last_sync_error}</span>
+          </div>
+        ) : null}
 
         {!activeSession ? (
           <div className="chat-empty-state">
@@ -404,36 +414,39 @@ export default function ChatWorkspace({
           </div>
         ) : sortedMessages.length ? (
           <div className="chat-thread">
-            {sortedMessages.map((message) => (
-              <article className={`chat-message ${message.role === "user" ? "user" : "assistant"}`} key={message.id}>
-                {message.role === "assistant" ? (
-                  <div className="assistant-response">
-                    <AssistantActivityGroup
-                      message={message}
-                      collapsed={collapsedActivity[message.id] ?? message.status !== "streaming"}
-                      onFileLinkClick={handleOpenFileLink}
-                      onToggle={() =>
-                        setCollapsedActivity((current) => ({
-                          ...current,
-                          [message.id]: !(current[message.id] ?? message.status !== "streaming")
-                        }))
-                      }
-                    />
-                    {message.content ? (
-                      <MarkdownContent content={message.content} onFileLinkClick={handleOpenFileLink} />
-                    ) : message.activities.length === 0 && message.status === "streaming" ? (
-                      <p className="thinking-placeholder">Thinking...</p>
-                    ) : null}
-                    {message.error ? <p className="error-text">{message.error}</p> : null}
-                  </div>
-                ) : (
-                  <div className="user-message-bubble">
-                    <MessageAttachmentList message={message} />
-                    {message.content ? <p>{message.content}</p> : null}
-                  </div>
-                )}
-              </article>
-            ))}
+            {sortedMessages.map((message) => {
+              const visibleAssistantContent = message.role === "assistant" ? getVisibleAssistantContent(message) : "";
+              return (
+                <article className={`chat-message ${message.role === "user" ? "user" : "assistant"}`} key={message.id}>
+                  {message.role === "assistant" ? (
+                    <div className="assistant-response">
+                      <AssistantActivityGroup
+                        message={message}
+                        collapsed={collapsedActivity[message.id] ?? message.status !== "streaming"}
+                        onFileLinkClick={handleOpenFileLink}
+                        onToggle={() =>
+                          setCollapsedActivity((current) => ({
+                            ...current,
+                            [message.id]: !(current[message.id] ?? message.status !== "streaming")
+                          }))
+                        }
+                      />
+                      {visibleAssistantContent ? (
+                        <MarkdownContent content={visibleAssistantContent} onFileLinkClick={handleOpenFileLink} />
+                      ) : message.activities.length === 0 && message.status === "streaming" ? (
+                        <p className="thinking-placeholder">Thinking...</p>
+                      ) : null}
+                      {message.error ? <p className="error-text">{message.error}</p> : null}
+                    </div>
+                  ) : (
+                    <div className="user-message-bubble">
+                      <MessageAttachmentList message={message} />
+                      {message.content ? <p>{message.content}</p> : null}
+                    </div>
+                  )}
+                </article>
+              );
+            })}
             <div className="chat-thread-end" ref={threadEndRef} aria-hidden="true" />
           </div>
         ) : (
@@ -516,7 +529,7 @@ export default function ChatWorkspace({
               <div className="composer-toolbar-right">
                 {turnBusy ? (
                   <span className="composer-busy-indicator">
-                    <span aria-hidden="true" /> Codex is working
+                    <span aria-hidden="true" /> {desktopActive ? "Desktop is running" : "Codex is working"}
                   </span>
                 ) : (
                   <ModelReasoningPicker
@@ -533,9 +546,9 @@ export default function ChatWorkspace({
                   <button
                     className="composer-send-button stop"
                     type="button"
-                    disabled={cancelling}
+                    disabled={cancelling || !canStopTurn}
                     onClick={() => void handleCancel()}
-                    title="Stop"
+                    title={canStopTurn ? "Stop" : "Desktop-owned turn cannot be stopped from Agent Port"}
                   >
                     <Square size={18} />
                   </button>
@@ -549,6 +562,11 @@ export default function ChatWorkspace({
             {planMode ? (
               <div className="composer-plan-note">
                 Managed plan-first mode for app-server. Codex will propose a plan and wait for confirmation before edits.
+              </div>
+            ) : null}
+            {desktopActive ? (
+              <div className="composer-plan-note">
+                Codex Desktop is running this thread. Agent Port will refresh the transcript and unlock the composer when the thread is idle.
               </div>
             ) : null}
           </div>
@@ -1203,6 +1221,30 @@ function decodeLinkTarget(target: string): string {
 
 function basenameFromLinkTarget(target: string): string {
   return target.split(/[\\/]+/).filter(Boolean).pop() ?? "";
+}
+
+function getVisibleAssistantContent(message: ChatMessage): string {
+  const content = message.content.trim();
+  if (!content) {
+    return "";
+  }
+  if (
+    message.status === "streaming" &&
+    message.activities.some((activity) => activityContentContainsLeakedPrefix(activity.content, content))
+  ) {
+    return "";
+  }
+  return message.content;
+}
+
+function activityContentContainsLeakedPrefix(activityContent: string, content: string): boolean {
+  const normalizedActivity = normalizeStreamingFragment(activityContent);
+  const normalizedContent = normalizeStreamingFragment(content);
+  return Boolean(normalizedContent) && normalizedActivity.startsWith(normalizedContent);
+}
+
+function normalizeStreamingFragment(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 function formatDuration(durationMs: number | null): string {

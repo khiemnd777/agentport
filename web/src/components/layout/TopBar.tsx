@@ -2,8 +2,7 @@ import type { ReactNode } from "react";
 import { GitBranch, LogOut, Monitor, Moon, PanelRightClose, RefreshCw, Sun, X } from "lucide-react";
 import type { CodexSession, PublicRepo } from "../../api/client";
 import type { DisplayMode } from "../../theme";
-import SessionStatusBadge from "../sessions/SessionStatusBadge";
-import TaskStatusBadge from "../tasks/TaskStatusBadge";
+import SessionStatusBadges from "../sessions/SessionStatusBadges";
 
 interface Props {
   activeSession: CodexSession | null;
@@ -47,11 +46,7 @@ export default function TopBar({
           </span>
         ) : null}
         {activeSession ? (
-          <>
-            <SessionStatusBadge status={activeSession.terminal_status} />
-            <TaskStatusBadge status={activeSession.task_status} />
-            <span className="mode-chip">{activeSession.control_mode.replace("_", " ")}</span>
-          </>
+          <SessionStatusBadges session={activeSession} />
         ) : null}
       </div>
       <div className="topbar-actions">

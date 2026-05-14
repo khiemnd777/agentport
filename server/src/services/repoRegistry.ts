@@ -40,6 +40,10 @@ export class RepoRegistry {
     return [...this.repos.values()].map((repo) => ({ key: repo.key, label: repo.label }));
   }
 
+  list(): Repo[] {
+    return [...this.repos.values()];
+  }
+
   getRepo(repoKey: string): Repo {
     validateRepoKey(repoKey);
     const repo = this.repos.get(repoKey);
